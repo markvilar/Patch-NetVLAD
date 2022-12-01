@@ -205,3 +205,8 @@ octave-workspace
 *.exe
 *.out
 *.app
+
+# vim
+*.swp
+*.swo
+*.swa
