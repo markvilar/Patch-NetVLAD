@@ -43,22 +43,6 @@ import itertools
 from tqdm import tqdm
 
 
-default_cities = {
-    'train': [
-        "trondheim", "london", "boston", "melbourne", "amsterdam", "helsinki",
-        "tokyo", "toronto", "saopaulo", "moscow", "zurich", "paris", "bangkok",
-        "budapest", "austin", "berlin", "ottawa", "phoenix", "goa", "amman", 
-        "nairobi", "manila"
-    ],
-    'val': [
-        "cph", "sf"
-    ],
-    'test': [
-        "miami", "athens", "buenosaires", "stockholm", "bengaluru", "kampala"
-    ]
-}
-
-
 class ImagesFromList(Dataset):
     def __init__(self, images, transform):
         self.images = np.asarray(images)
@@ -82,17 +66,23 @@ class ImagesFromList(Dataset):
 
 class MSLS(Dataset):
     def __init__(self, root_dir, cities='', nNeg=5, transform=None, 
-        mode='train', task='im2im', subtask='all', seq_length=1, posDistThr=10, 
-        negDistThr=25, cached_queries=1000, cached_negatives=1000,
-        positive_sampling=True, bs=24, threads=8, margin=0.1, 
-        exclude_panos=True):
+            mode='train', 
+            seq_length=1, # always 1 for im2im
+            posDistThr=10, 
+            negDistThr=25, 
+            cached_queries=1000, 
+            cached_negatives=1000,
+            positive_sampling=True, 
+            bs=24, 
+            threads=8, 
+            margin=0.1, 
+            exclude_panos=True
+        ):
 
         # initializing
         assert mode in ('train', 'val', 'test')
-        assert task in ('im2im', 'im2seq', 'seq2im', 'seq2seq')
         assert subtask in ('all', 's2w', 'w2s', 'o2n', 'n2o', 'd2n', 'n2d')
         assert seq_length % 2 == 1
-        assert (task == 'im2im' and seq_length == 1) or (task != 'im2im' and seq_length > 1)
 
         if cities in default_cities:
             self.cities = default_cities[cities]
@@ -123,29 +113,17 @@ class MSLS(Dataset):
 
         # flags
         self.cache = None
-        self.exclude_panos = exclude_panos
         self.mode = mode
-        self.subtask = subtask
-        print('Exclude panoramas:', self.exclude_panos)
 
         # other
         self.transform = transform
 
         # define sequence length based on task
-        if task == 'im2im':
-            seq_length_q, seq_length_db = 1, 1
-        elif task == 'seq2seq':
-            seq_length_q, seq_length_db = seq_length, seq_length
-        elif task == 'seq2im':
-            seq_length_q, seq_length_db = seq_length, 1
-        else:  # im2seq
-            seq_length_q, seq_length_db = 1, seq_length
+        seq_length_q, seq_length_db = 1, 1
 
         # load data
         for city in self.cities:
             print("=====> {}".format(city))
-
-            subdir = 'test' if city in default_cities['test'] else 'train_val'
 
             # get len of images from cities so far for indexing
             _lenQ = len(self.qImages)
@@ -171,12 +149,12 @@ class MSLS(Dataset):
                 qSeqKeys, qSeqIdxs = self.arange_as_seq(
                     qData, 
                     join(root_dir, subdir, city, 'query'), 
-                    seq_length_q
+                    1 #seq_length_q
                 )
                 dbSeqKeys, dbSeqIdxs = self.arange_as_seq(
                     dbData, 
                     join(root_dir, subdir, city, 'database'),
-                    seq_length_db
+                    1 #seq_length_db
                 )
 
                 # filter based on subtasks
@@ -195,18 +173,6 @@ class MSLS(Dataset):
                     val_frames = np.where(dbIdx[self.subtask])[0]
                     dbSeqKeys, dbSeqIdxs = self.filter(dbSeqKeys, dbSeqIdxs, 
                         val_frames)
-
-                # filter based on panorama data
-                if self.exclude_panos:
-                    panos_frames = np.where(
-                        (qDataRaw['pano'] == False).values)[0]
-                    qSeqKeys, qSeqIdxs = self.filter(qSeqKeys, qSeqIdxs, 
-                        panos_frames)
-
-                    panos_frames = np.where(
-                        (dbDataRaw['pano'] == False).values)[0]
-                    dbSeqKeys, dbSeqIdxs = self.filter(dbSeqKeys, dbSeqIdxs, 
-                        panos_frames)
 
                 unique_qSeqIdx = np.unique(qSeqIdxs)
                 unique_dbSeqIdx = np.unique(dbSeqIdxs)
@@ -285,16 +251,21 @@ class MSLS(Dataset):
                 dbIdx = pd.read_csv(join(root_dir, subdir, city, 'database', 'subtask_index.csv'), index_col=0)
 
                 # arange in sequences
-                qSeqKeys, qSeqIdxs = self.arange_as_seq(qIdx, join(root_dir, subdir, city, 'query'), seq_length_q)
-                dbSeqKeys, dbSeqIdxs = self.arange_as_seq(dbIdx, join(root_dir, subdir, city, 'database'),
-                                                          seq_length_db)
+                qSeqKeys, qSeqIdxs = self.arange_as_seq(qIdx, 
+                    join(root_dir, subdir, city, 'query'), 
+                    1 #seq_length_q
+                )
+                dbSeqKeys, dbSeqIdxs = self.arange_as_seq(dbIdx, 
+                    join(root_dir, subdir, city, 'database'),
+                    1 #seq_length_db
+                )
 
                 # filter query based on subtask
-                val_frames = np.where(qIdx[self.subtask])[0]
+                #val_frames = np.where(qIdx[self.subtask])[0]
                 qSeqKeys, qSeqIdxs = self.filter(qSeqKeys, qSeqIdxs, val_frames)
 
                 # filter database based on subtask
-                val_frames = np.where(dbIdx[self.subtask])[0]
+                #val_frames = np.where(dbIdx[self.subtask])[0]
                 dbSeqKeys, dbSeqIdxs = self.filter(dbSeqKeys, dbSeqIdxs, val_frames)
 
                 self.qImages.extend(qSeqKeys)
@@ -378,7 +349,8 @@ class MSLS(Dataset):
             seq_idx = np.arange(-seq_length // 2, seq_length // 2) + 1 + idx
             seq = seqInfo.iloc[seq_idx]
 
-            # the sequence must have the same sequence key and must have consecutive frames
+            # the sequence must have the same sequence key and must have 
+            # consecutive frames
             if len(np.unique(seq['sequence_key'])) == 1 \
                 and (seq['frame_number'].diff()[1:] == 1).all():
                 seq_key = ','.join([join(path, 'images', key + '.jpg') 
@@ -395,8 +367,7 @@ class MSLS(Dataset):
         for key, idx in zip(seqKeys, seqIdxs):
             if idx[len(idx) // 2] in center_frame_condition:
                 keys.append(key)
-                idxs.append(idx)
-        return keys, np.asarray(idxs)
+                idxs.append(idx) return keys, np.asarray(idxs)
 
     @staticmethod
     def collate_fn(batch):

@@ -37,14 +37,16 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from sklearn.neighbors import NearestNeighbors
-import faiss
+#import faiss
 import numpy as np
 
 
 def get_integral_feature(feat_in):
     """
-    Input/Output as [N,D,H,W] where N is batch size and D is descriptor dimensions
-    For VLAD, D = K x d where K is the number of clusters and d is the original descriptor dimensions
+    Input/Output as [N,D,H,W] where N is batch size and D is descriptor 
+    dimensions.
+    For VLAD, D = K x d where K is the number of clusters and d is the original 
+    descriptor dimensions.
     """
     feat_out = torch.cumsum(feat_in, dim=-1)
     feat_out = torch.cumsum(feat_out, dim=-2)
@@ -54,8 +56,9 @@ def get_integral_feature(feat_in):
 
 def get_square_regions_from_integral(feat_integral, patch_size, patch_stride):
     """
-    Input as [N,D,H+1,W+1] where additional 1s for last two axes are zero paddings
-    regSize and regStride are single values as only square regions are implemented currently
+    Input as [N,D,H+1,W+1] where additional 1s for last two axes are zero 
+    paddings regSize and regStride are single values as only square regions are 
+    implemented currently.
     """
     N, D, H, W = feat_integral.shape
 
@@ -65,15 +68,16 @@ def get_square_regions_from_integral(feat_integral, patch_size, patch_stride):
         conv_weight = torch.ones(D, 1, 2, 2, device=feat_integral.get_device())
     conv_weight[:, :, 0, -1] = -1
     conv_weight[:, :, -1, 0] = -1
-    feat_regions = torch.nn.functional.conv2d(feat_integral, conv_weight, stride=patch_stride, groups=D, dilation=patch_size)
+    feat_regions = torch.nn.functional.conv2d(feat_integral, conv_weight, 
+        stride=patch_stride, groups=D, dilation=patch_size)
     return feat_regions / (patch_size ** 2)
 
 
 class PatchNetVLAD(nn.Module):
     """NetVLAD layer implementation"""
 
-    def __init__(self, num_clusters=64, dim=128, normalize_input=True, vladv2=False, use_faiss=True,
-                 patch_sizes='4', strides='1'):
+    def __init__(self, num_clusters=64, dim=128, normalize_input=True, 
+        vladv2=False, use_faiss=True, patch_sizes='4', strides='1'):
         """
         Args:
             num_clusters : int
@@ -100,7 +104,7 @@ class PatchNetVLAD(nn.Module):
         self.conv = nn.Conv2d(dim, num_clusters, kernel_size=(1, 1), bias=vladv2)
         # noinspection PyArgumentList
         self.centroids = nn.Parameter(torch.rand(num_clusters, dim))
-        self.use_faiss = use_faiss
+        self.use_faiss = False #use_faiss
         self.padding_size = 0
         patch_sizes = patch_sizes.split(",")
         strides = strides.split(",")
@@ -117,19 +121,22 @@ class PatchNetVLAD(nn.Module):
             dots.sort(0)
             dots = dots[::-1, :]  # sort, descending
 
-            self.alpha = (-np.log(0.01) / np.mean(dots[0, :] - dots[1, :])).item()
+            self.alpha = \
+                (-np.log(0.01) / np.mean(dots[0, :] - dots[1, :])).item()
             # noinspection PyArgumentList
             self.centroids = nn.Parameter(torch.from_numpy(clsts))
             # noinspection PyArgumentList
-            self.conv.weight = nn.Parameter(torch.from_numpy(self.alpha * clsts_assign).unsqueeze(2).unsqueeze(3))
+            self.conv.weight = nn.Parameter(torch.from_numpy(
+                self.alpha * clsts_assign).unsqueeze(2).unsqueeze(3))
             self.conv.bias = None
         else:
-            if not self.use_faiss:
-                knn = NearestNeighbors(n_jobs=-1)
-                knn.fit(traindescs)
-                del traindescs
-                ds_sq = np.square(knn.kneighbors(clsts, 2)[1])
-                del knn
+            #if not self.use_faiss:
+            knn = NearestNeighbors(n_jobs=-1)
+            knn.fit(traindescs)
+            del traindescs
+            ds_sq = np.square(knn.kneighbors(clsts, 2)[1])
+            del knn
+            """
             else:
                 index = faiss.IndexFlatL2(traindescs.shape[1])
                 # noinspection PyArgumentList
@@ -138,8 +145,11 @@ class PatchNetVLAD(nn.Module):
                 # noinspection PyArgumentList
                 ds_sq = index.search(clsts, 2)[1]
                 del index
+            """
 
-            self.alpha = (-np.log(0.01) / np.mean(ds_sq[:, 1] - ds_sq[:, 0])).item()
+            self.alpha = \
+                (-np.log(0.01) / np.mean(ds_sq[:, 1] - ds_sq[:, 0])).item()
+            
             # noinspection PyArgumentList
             self.centroids = nn.Parameter(torch.from_numpy(clsts))
             del clsts, ds_sq
@@ -164,12 +174,17 @@ class PatchNetVLAD(nn.Module):
         soft_assign = F.softmax(soft_assign, dim=1)
 
         # calculate residuals to each cluster
-        store_residual = torch.zeros([N, self.num_clusters, C, H, W], dtype=x.dtype, layout=x.layout, device=x.device)
-        for j in range(self.num_clusters):  # slower than non-looped, but lower memory usage
+        store_residual = torch.zeros([N, self.num_clusters, C, H, W], 
+            dtype=x.dtype, layout=x.layout, device=x.device)
+        for j in range(self.num_clusters):  
+            # slower than non-looped, but lower memory usage
             residual = x.unsqueeze(0).permute(1, 0, 2, 3, 4) - \
-                self.centroids[j:j + 1, :].expand(x.size(2), x.size(3), -1, -1).permute(2, 3, 0, 1).unsqueeze(0)
+                self.centroids[j:j + 1, :] \
+                .expand(x.size(2), x.size(3), -1, -1) \
+                .permute(2, 3, 0, 1).unsqueeze(0)
 
-            residual *= soft_assign[:, j:j + 1, :].unsqueeze(2)  # residual should be size [N K C H W]
+            # residual should be size [N K C H W]
+            residual *= soft_assign[:, j:j + 1, :].unsqueeze(2)  
             store_residual[:, j:j + 1, :, :, :] = residual
 
         vlad_global = store_residual.view(N, self.num_clusters, C, -1)
@@ -179,10 +194,13 @@ class PatchNetVLAD(nn.Module):
         ivlad = get_integral_feature(store_residual)
         vladflattened = []
         for patch_size, stride in zip(self.patch_sizes, self.strides):
-            vladflattened.append(get_square_regions_from_integral(ivlad, int(patch_size), int(stride)))
+            vladflattened.append(get_square_regions_from_integral(ivlad, 
+                int(patch_size), int(stride)))
 
+        
+        # looped to avoid GPU memory issues with certain config combinations
         vlad_local = []
-        for thisvlad in vladflattened:  # looped to avoid GPU memory issues with certain config combinations
+        for thisvlad in vladflattened:  
             thisvlad = thisvlad.view(N, self.num_clusters, C, -1)
             thisvlad = F.normalize(thisvlad, p=2, dim=2)
             thisvlad = thisvlad.view(x.size(0), -1, thisvlad.size(3))
