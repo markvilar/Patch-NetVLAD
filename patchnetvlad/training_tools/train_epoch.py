@@ -36,19 +36,25 @@ from patchnetvlad.training_tools.tools import humanbytes
 from patchnetvlad.training_tools.msls import MSLS
 
 
-def train_epoch(train_dataset, model, optimizer, criterion, encoder_dim, device, epoch_num, opt, config, writer):
+def train_epoch(train_dataset, model, optimizer, criterion, encoder_dim, 
+    device, epoch_num, opt, config, writer):
     if device.type == 'cuda':
         cuda = True
     else:
         cuda = False
+    
     train_dataset.new_epoch()
 
     epoch_loss = 0
     startIter = 1  # keep track of batch iter across subsets for logging
 
-    nBatches = (len(train_dataset.qIdx) + int(config['train']['batchsize']) - 1) // int(config['train']['batchsize'])
+    n_queries = len(train_dataset.qIdx)
+    batch_size = int(config['train']['batchsize'])
+    nBatches = (n_queries + batch_size - 1) // batch_size
 
-    for subIter in trange(train_dataset.nCacheSubset, desc='Cache refresh'.rjust(15), position=1):
+    for subIter in trange(train_dataset.nCacheSubset, 
+        desc='Cache refresh'.rjust(15), position=1):
+        
         pool_size = encoder_dim
         if config['global_params']['pooling'].lower() == 'netvlad':
             pool_size *= int(config['global_params']['num_clusters'])
@@ -56,18 +62,22 @@ def train_epoch(train_dataset, model, optimizer, criterion, encoder_dim, device,
         tqdm.write('====> Building Cache')
         train_dataset.update_subcache(model, pool_size)
 
-        training_data_loader = DataLoader(dataset=train_dataset, num_workers=opt.threads,
-                                          batch_size=int(config['train']['batchsize']), shuffle=True,
-                                          collate_fn=MSLS.collate_fn, pin_memory=cuda)
+        training_data_loader = DataLoader(dataset=train_dataset, 
+            num_workers=opt.threads,
+            batch_size=int(config['train']['batchsize']), 
+            shuffle=True,
+            collate_fn=MSLS.collate_fn, 
+            pin_memory=cuda)
 
         tqdm.write('Allocated: ' + humanbytes(torch.cuda.memory_allocated()))
         tqdm.write('Cached:    ' + humanbytes(torch.cuda.memory_cached()))
 
         model.train()
         for iteration, (query, positives, negatives, negCounts, indices) in \
-                enumerate(tqdm(training_data_loader, position=2, leave=False, desc='Train Iter'.rjust(15)), startIter):
-            # some reshaping to put query, pos, negs in a single (N, 3, H, W) tensor
-            # where N = batchSize * (nQuery + nPos + nNeg)
+            enumerate(tqdm(training_data_loader, position=2, leave=False, 
+                desc='Train Iter'.rjust(15)), startIter):
+            # some reshaping to put query, pos, negs in a single (N, 3, H, W) 
+            # tensor where N = batchSize * (nQuery + nPos + nNeg)
             if query is None:
                 continue  # in case we get an empty batch
 
@@ -90,9 +100,11 @@ def train_epoch(train_dataset, model, optimizer, criterion, encoder_dim, device,
             for i, negCount in enumerate(negCounts):
                 for n in range(negCount):
                     negIx = (torch.sum(negCounts[:i]) + n).item()
-                    loss += criterion(vladQ[i: i + 1], vladP[i: i + 1], vladN[negIx:negIx + 1])
+                    loss += criterion(vladQ[i: i + 1], vladP[i: i + 1], 
+                        vladN[negIx:negIx + 1])
 
-            loss /= nNeg.float().to(device)  # normalise by actual number of negatives
+            # normalise by actual number of negatives
+            loss /= nNeg.float().to(device)  
             loss.backward()
             optimizer.step()
             del data_input, image_encoding, vlad_encoding, vladQ, vladP, vladN
@@ -102,14 +114,16 @@ def train_epoch(train_dataset, model, optimizer, criterion, encoder_dim, device,
             epoch_loss += batch_loss
 
             if iteration % 50 == 0 or nBatches <= 10:
-                tqdm.write("==> Epoch[{}]({}/{}): Loss: {:.4f}".format(epoch_num, iteration,
-                                                                       nBatches, batch_loss))
+                tqdm.write("==> Epoch[{}]({}/{}): Loss: {:.4f}".format(
+                    epoch_num, iteration, nBatches, batch_loss))
                 writer.add_scalar('Train/Loss', batch_loss,
-                                  ((epoch_num - 1) * nBatches) + iteration)
+                    ((epoch_num - 1) * nBatches) + iteration)
                 writer.add_scalar('Train/nNeg', nNeg,
-                                  ((epoch_num - 1) * nBatches) + iteration)
-                tqdm.write('Allocated: ' + humanbytes(torch.cuda.memory_allocated()))
-                tqdm.write('Cached:    ' + humanbytes(torch.cuda.memory_cached()))
+                    ((epoch_num - 1) * nBatches) + iteration)
+                tqdm.write('Allocated: ' 
+                    + humanbytes(torch.cuda.memory_allocated()))
+                tqdm.write('Cached:    ' 
+                    + humanbytes(torch.cuda.memory_cached()))
 
         startIter += len(training_data_loader)
         del training_data_loader, loss
@@ -118,5 +132,6 @@ def train_epoch(train_dataset, model, optimizer, criterion, encoder_dim, device,
 
     avg_loss = epoch_loss / nBatches
 
-    tqdm.write("===> Epoch {} Complete: Avg. Loss: {:.4f}".format(epoch_num, avg_loss))
+    tqdm.write("===> Epoch {} Complete: Avg. Loss: {:.4f}".format(epoch_num, 
+        avg_loss))
     writer.add_scalar('Train/AvgLoss', avg_loss, epoch_num)
