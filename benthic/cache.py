@@ -1,15 +1,11 @@
+import math
+import random
+
 import numpy as np
+import torch
+
 from PIL import Image
 from torch.utils.data import Dataset
-import torch.utils.data as data
-import pandas as pd
-from os.path import join
-from sklearn.neighbors import NearestNeighbors
-import math
-import torch
-import random
-import sys
-import itertools
 from tqdm import tqdm
 
 
@@ -36,7 +32,7 @@ class ImagesFromList(Dataset):
 
 class SubCache():
     def __init__(self):
-        self.nCacheSubset
+        self.num_cache_subset = 0
         self.triplets = []
         self.subcache_indices = 0
         self.current_subset = 0
@@ -46,15 +42,15 @@ class SubCache():
 
         self.threads = 6
 
-     def new_epoch(self):
+    def new_epoch(self):
         # find how many subset we need to do 1 epoch
-        self.nCacheSubset = math.ceil(len(self.qIdx) / self.cached_queries)
+        self.num_cache_subset = math.ceil(len(self.qIdx) / self.cached_queries)
         # get all indices
         arr = np.arange(len(self.qIdx))
         # apply positive sampling of indices
         arr = random.choices(arr, self.weights, k=len(arr))
         # calculate the subcache indices
-        self.subcache_indices = np.array_split(arr, self.nCacheSubset)
+        self.subcache_indices = np.array_split(arr, self.num_cache_subset)
         # reset subset counter
         self.current_subset = 0   
 

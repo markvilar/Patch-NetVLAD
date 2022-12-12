@@ -67,8 +67,9 @@ def get_clusters(cluster_set, model, encoder_dim, device, opt, config):
     if not exists(join(opt.cache_path, 'centroids')):
         makedirs(join(opt.cache_path, 'centroids'))
 
-    initcache_clusters = join(opt.cache_path, 'centroids',
-                              'vgg16_' + 'mapillary_' + config['train']['num_clusters'] + '_desc_cen.hdf5')
+    path = 'vgg16_' + 'mapillary_' + config['train']['num_clusters'] \
+        + '_desc_cen.hdf5' 
+    initcache_clusters = os.path.join(opt.cache_path, 'centroids', path)
     with h5py.File(initcache_clusters, mode='w') as h5_file:
         with torch.no_grad():
             model.eval()

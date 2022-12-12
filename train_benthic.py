@@ -1,80 +1,53 @@
 #!/usr/bin/env python
 
-'''
-MIT License
-
-Copyright (c) 2021 Stephen Hausler, Sourav Garg, Ming Xu, Michael Milford and Tobias Fischer
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-Significant parts of our code are based on [Nanne's pytorch-netvlad repository]
-(https://github.com/Nanne/pytorch-NetVlad/), as well as some parts from the [Mapillary SLS repository]
-(https://github.com/mapillary/mapillary_sls)
-
-This code trains the NetVLAD neural network used to extract Patch-NetVLAD features.
-'''
-
-
 from __future__ import print_function
 
 import argparse
 import configparser
 import os
 import random
-import shutil
-from os.path import join, isfile
-from os import makedirs
-from datetime import datetime
 import tempfile
+
+from datetime import datetime
+from pathlib import Path
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
 
-import h5py
-
-from tensorboardX import SummaryWriter
 import numpy as np
 
-from patchnetvlad.training_tools.train_epoch import train_epoch
-from patchnetvlad.training_tools.val import val
-from patchnetvlad.training_tools.get_clusters import get_clusters
-from patchnetvlad.training_tools.tools import save_checkpoint
+# NOTE: Might remove?
+# from patchnetvlad.training_tools.train_epoch import train_epoch
+# from patchnetvlad.training_tools.val import val  
+# from patchnetvlad.training_tools.tools import save_checkpoint
+
 from patchnetvlad.tools.datasets import input_transform
 from patchnetvlad.models.models_generic import get_backend, get_model
 from patchnetvlad.tools import PATCHNETVLAD_ROOT_DIR
 
 from tqdm.auto import trange
 
-from patchnetvlad.training_tools.msls import MSLS
+from benthic.dataset import BenthicDataset, BenthicDatasetFactory
+from benthic.training_utils import (
+    create_from_checkpoint,
+    create_from_clusters,
+    create_from_scratch,
+    perform_training
+)
 
-from custom.dataset import DatasetFactory
-from custom.training_utils import perform_clustering, perform_training
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Patch-NetVLAD-train')
+def prepare_arguments(description: str):
+    parser = argparse.ArgumentParser(description=description)
 
     parser.add_argument('--config_path', 
         type=str, 
-        default=join(PATCHNETVLAD_ROOT_DIR, 'configs/train.ini'),
+        default=os.path.join(PATCHNETVLAD_ROOT_DIR, 'configs/train.ini'),
         help='File name (with extension) to an ini file with model config.',
+    )
+    parser.add_argument("--data_path", 
+        type=Path,
+        required=True,
+        help="config file path with image directory, query, and index paths",
     )
     parser.add_argument('--cache_path', 
         type=str, 
@@ -96,17 +69,12 @@ if __name__ == "__main__":
         default='',
         help='Full path and name (with extension) to load cluster data from.'
     )
-    parser.add_argument('--dataset_root_dir', 
-        type=str, 
-        default='/work/qvpr/data/raw/Mapillary_Street_Level_Sequences',
-        help='Root directory of dataset',
-    )
     parser.add_argument('--identifier', 
         type=str, 
-        default='mapillary_nopanos',
+        default='',
         help='Description of this model, e.g. mapillary_nopanos_vgg16_netvlad'
     )
-    parser.add_argument('--nEpochs', 
+    parser.add_argument('--epochs', 
         type=int, 
         default=30, 
         help='number of epochs to train for'
@@ -131,37 +99,26 @@ if __name__ == "__main__":
         help='If true, use CPU only. Else use GPU.'
     )
 
+    return parser
 
-    opt = parser.parse_args()
-    print(opt)
 
-    configfile = opt.config_path
-    assert os.path.isfile(configfile)
+def load_configuration(path: Path):
+    assert os.path.isfile(path)
     config = configparser.ConfigParser()
-    config.read(configfile)
+    config.read(path)
+    return config
 
-    cuda = not opt.nocuda
-    if cuda and not torch.cuda.is_available():
-        raise Exception("No GPU found, please run with --nocuda")
 
-    device = torch.device("cuda" if cuda else "cpu")
-
-    random.seed(int(config['train']['seed']))
-    np.random.seed(int(config['train']['seed']))
-    torch.manual_seed(int(config['train']['seed']))
+def set_seeds(seed: int, cuda: bool):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
     if cuda:
-        # noinspection PyUnresolvedReferences
-        torch.cuda.manual_seed(int(config['train']['seed']))
-
-    optimizer = None
-    scheduler = None
-
-    print('===> Building model')
+        torch.cuda.manual_seed(seed)
 
 
-    # TODO: Perform clustering
-    prepare_model(opt, config)
-
+def prepare_optimizer(model, config):
+    optimizer, scheduler = None, None
     if config['train']['optim'] == 'ADAM':
         optimizer = optim.Adam(filter(lambda par: par.requires_grad,
             model.parameters()), lr=float(config['train']['lr'])
@@ -180,19 +137,86 @@ if __name__ == "__main__":
     else:
         raise ValueError('Unknown optimizer: ' + config['train']['optim'])
 
+    return optimizer, scheduler
+
+
+def create_loss_criterion(config, device):
     criterion = nn.TripletMarginLoss(
-        margin=float(config['train']['margin']) ** 0.5, p=2, 
-        reduction='sum'
+        margin=float(config["train"]["margin"]) ** 0.5, 
+        p=2,
+        reduction="sum"
     ).to(device)
 
+    return criterion
+
+
+def main():
+    # Set up command-line arguments
+    parser = prepare_arguments("train patchnetvlad benthic")
+    options = parser.parse_args()
+    
+    print(options)
+
+    # Load configuration
+    config = load_configuration(options.config_path)
+
+    # Load data
+    data = load_configuration(options.data_path)
+
+    # Decide cuda and device
+    cuda = not options.nocuda
+    if cuda and not torch.cuda.is_available():
+        raise Exception("No GPU found, please run with --nocuda")
+    device = torch.device("cuda" if cuda else "cpu")
+
+    # Set seeds
+    set_seeds(int(config["train"]["seed"]), cuda)
+
+    dataset_factory = BenthicDatasetFactory(
+            Path(data["paths"]["image"]),
+            Path(data["paths"]["query"]),
+            Path(data["paths"]["index"]),
+            threshold_pos = float(config["train"]["dist_positive"]),
+            threshold_neg = float(config["train"]["dist_negative"]),
+            transform = input_transform,
+        )
+
+    # Load / create model
+    model = None
+    if options.resume_path:
+        model = create_from_checkpoint(options, config)
+    elif options.cluster_path: # TODO: Figure out what conditions triggers this
+        model = create_from_clusters(options, config)
+    else:
+        # TODO: Need to integrate with Benthic dataset
+        model = create_from_scratch(options, config, dataset, device)
+
+    assert model, "no model created / loaded"
+
+    # Prepare optimizer and scheduler   
+    optimizer, scheduler = prepare_optimizer(model, config)
+
+    # Prepare criterion
+    criterion = create_loss_criterion(config, device)
+
+    # Transfer model to device
     model = model.to(device)
 
-    if opt.resume_path:
-        optimizer.load_state_dict(checkpoint['optimizer'])
-
+    # TODO: Skip?
+    """
+    if options.resume_path:
+        checkpoint = torch.load(options.resume_path, 
+            map_location=lambda storage, loc: storage)
+        optimizer.load_state_dict(checkpoint["optimizer"])
+    """
+    
     print('===> Loading dataset(s)')
 
-    # TODO: Swap with my dataset
+    # TODO: Create training and validation dataset
+    training, validation = dataset_factory.create_training(0.25)
+
+
+    """
     train_dataset = MSLS(
         opt.dataset_root_dir, 
         mode='train', 
@@ -202,8 +226,10 @@ if __name__ == "__main__":
         threads=opt.threads, 
         margin=float(config['train']['margin']),
     )
+    """
 
     # TODO: Swap with my dataset
+    """
     validation_dataset = MSLS(
         opt.dataset_root_dir, 
         mode='val', 
@@ -213,7 +239,9 @@ if __name__ == "__main__":
         margin=float(config['train']['margin']), 
         posDistThr=25
     )
-
+    """
+    
+    """
     print(train_dataset)
     print(validation_dataset)
 
@@ -221,14 +249,18 @@ if __name__ == "__main__":
     print('===> Evaluating on val set, query count:', 
         len(validation_dataset.qIdx))
     print('===> Training model')
-    writer = SummaryWriter(log_dir=join(opt.save_path, 
+    writer = SummaryWriter(log_dir=os.path.join(opt.save_path, 
         datetime.now().strftime('%b%d_%H-%M-%S') + '_' + opt.identifier))
 
     # write checkpoints in logdir
     logdir = writer.file_writer.get_logdir()
-    opt.save_file_path = join(logdir, 'checkpoints')
-    makedirs(opt.save_file_path)
+    opt.save_file_path = os.path.join(logdir, 'checkpoints')
+    os.makedirs(opt.save_file_path)
 
     # Do training
     do_training(train_dataset, validation_dataset, model, optimizer, 
         criterion, encoder_dim, device, epoch, opt, config, checkpoint, writer)
+    """
+
+if __name__ == "__main__":
+    main()

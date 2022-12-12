@@ -55,12 +55,15 @@ from patchnetvlad.tools.datasets import PlaceDataset
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Patch-NetVLAD-add-pca')
 
-    parser.add_argument('--config_path', type=str, default=join(PATCHNETVLAD_ROOT_DIR, 'configs/train.ini'),
-                        help='File name (with extension) to an ini file that stores most of the configuration data for patch-netvlad')
-    parser.add_argument('--resume_path', type=str, default='',
-                        help='Full path and name (with extension) to load checkpoint from, for resuming training.')
-    parser.add_argument('--dataset_root_dir', type=str, default='/work/qvpr/data/raw/Mapillary_Street_Level_Sequences',
-                        help='Root directory of dataset')
+    parser.add_argument('--config_path', type=str, 
+        default=join(PATCHNETVLAD_ROOT_DIR, 'configs/train.ini'),
+        help='File name (with extension) to an ini file that stores most of the configuration data for patch-netvlad')
+    parser.add_argument('--resume_path', type=str, 
+        default='',
+        help='Full path and name (with extension) to load checkpoint from, for resuming training.')
+    parser.add_argument('--dataset_root_dir', type=str, 
+        default='/work/qvpr/data/raw/Mapillary_Street_Level_Sequences',
+        help='Root directory of dataset')
     parser.add_argument('--dataset_choice', type=str, default='mapillary', help='choice of mapillary or pitts, for PCA',
                         choices=['mapillary', 'pitts'])
     parser.add_argument('--threads', type=int, default=6, help='Number of threads for each data loader to use')
