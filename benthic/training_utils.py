@@ -1,155 +1,191 @@
 #!/usr/bin/env python
 
-import os
-import random
-import shutil
-
-import h5py
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from tensorboardX import SummaryWriter
+from torch.utils.data import DataLoader
+from tqdm.auto import trange, tqdm
 
-from patchnetvlad.training_tools.train_epoch import train_epoch
 from patchnetvlad.training_tools.val import val
-from patchnetvlad.training_tools.get_clusters import get_clusters
-from patchnetvlad.training_tools.tools import save_checkpoint
-from patchnetvlad.tools.datasets import input_transform
-from patchnetvlad.models.models_generic import get_backend, get_model
-from patchnetvlad.tools import PATCHNETVLAD_ROOT_DIR
+from patchnetvlad.training_tools.tools import save_checkpoint, humanbytes
+from patchnetvlad.models.models_generic import get_backend
 
-from tqdm.auto import trange
-
-from patchnetvlad.training_tools.msls import MSLS
+from benthic import batch
 
 
-def create_from_checkpoint(options, config):
-    """ Loads an existing model from a checkpoint. """
-    assert options.resume_path, "no resume path"
-    assert os.path.isfile(options.resume_path), "invalid resume path"
+def train_epoch(training_set, model, trainer, encoder_dim, epoch_num, options, 
+    config, writer):
+    """ Train the model for an epoch. """
 
-    print("=> loading checkpoint {0}".format(options.resume_path))
-
-    # Load checkpoint
-    checkpoint = torch.load(options.resume_path, 
-        map_location=lambda storage, loc: storage)
-
-    # Remove PCA layers
-    state_dict = checkpoint["state_dict"] # type = collections.OrderedDict
-    remove_layers = ["WPCA.0.weight", "WPCA.0.bias"]
-    for layer in remove_layers:
-        if layer in state_dict:
-            del state_dict[layer]
-            print("Removed layer: {0}".format(layer))
-
-    # Add checkpoint parameters to config
-    config['global_params']['num_clusters'] = \
-        str(checkpoint['state_dict']['pool.centroids'].shape[0])
-
-    # Create model
-    encoder_dim, encoder = get_backend()
-    model = get_model(encoder, encoder_dim, config['global_params'], 
-        append_pca_layer=False)
-
-    model.load_state_dict(checkpoint['state_dict'])
-    if "epoch" in checkpoint:
-        options.start_epoch = checkpoint['epoch']
-
-    print("=> loaded checkpoint {0}".format(options.resume_path))
-    return model
-
-
-def create_from_clusters(options, config):
-    """ Creates a new model with"""
-    print('===> Loading model')
-    config['global_params']['num_clusters'] = config['train']['num_clusters']
-
-    # Create model
-    encoder_dim, encoder = get_backend()
-    model = get_model(encoder, encoder_dim, config['global_params'], 
-        append_pca_layer=False)
-
-    # Create descriptor file
-    descriptor_file = "centroids", "vgg16_" + "mapillary_" \
-        + config["train"]["num_clusters"] + "_desc_cen.hdf5"
-    descriptor_cache = os.path.join(options.cache_path, descriptor_file)
-
-    # Load clusters from file
-    assert options.cluster_path
-    assert os.path.isfile(options.cluster_path)
-    assert options.cluster_path != descriptor_cache
+    optimizer = trainer.get_optimizer()
+    criterion = trainer.get_criterion()
+    device = trainer.get_device()
     
-    # Copy clusters to cache
-    shutil.copyfile(options.cluster_path, descriptor_cache)
+    if device.type == "cuda":
+        pin_memory = True
+    else:
+        pin_memory = False
+    
+    # NOTE: Implement
+    training_set.new_epoch()
 
-    # Return to CPU for initialization
-    model = model.to(device="cpu")
+    epoch_loss = 0.0
+    start_iter = 1 # keep track of batch iter across subsets for logging
 
-    # Initialize model with centroids and descriptors from training data
-    with h5py.File(descriptor_cache, mode='r') as h5:
-        clusters = h5.get("centroids")[...]
-        descriptors = h5.get("descriptors")[...]
-        model.pool.init_params(clusters, descriptors)
-        del clusters, descriptors
+    query_count = training_set.get_query_count()
+    batch_size = trainer.get_batch_size()
+    batch_count = (query_count + batch_size - 1) // batch_size
 
-    return model
+    # NOTE: For each epoch with the training set, iterate over a subset 
+    # (stored in the subcache)
+    for sub_iter in trange(batch_count, desc="Cache refresh".rjust(15), 
+        position=1):
+        
+        pool_size = encoder_dim
+        if config["global_params"]["pooling"].lower() == "netvlad":
+            pool_size *= int(config["global_params"]["num_clusters"])
+
+        tqdm.write("====> Building Cache")
+        
+        # TODO: Implement cache?
+        #training_set.update_subcache(model, pool_size)
+
+        # TODO: Implement function to create dataloader
+        training_dataloader = DataLoader(dataset=training_set, 
+            num_workers=options.threads,
+            batch_size=batch_size, 
+            shuffle=True,
+            collate_fn=batch.tuples_to_tensors, # TODO: Verify
+            pin_memory=pin_memory)
+
+        tqdm.write("Allocated: " + humanbytes(torch.cuda.memory_allocated()))
+        tqdm.write("Cached:    " + humanbytes(torch.cuda.memory_cached()))
+
+        model.train()
+        for iteration, (query, positives, negatives, negCounts, indices) in \
+            enumerate(tqdm(training_dataloader, position=2, leave=False, 
+                desc="Train Iter".rjust(15)), start_iter):
+            # some reshaping to put query, pos, negs in a single (N, 3, H, W) 
+            # tensor where N = batchSize * (nQuery + nPos + nNeg)
+            if query is None:
+                continue  # in case we get an empty batch
+
+            B, C, H, W = query.shape
+            nNeg = torch.sum(negCounts)
+            data_input = torch.cat([query, positives, negatives])
+
+            data_input = data_input.to(device)
+            image_encoding = model.encoder(data_input)
+            vlad_encoding = model.pool(image_encoding)
+
+            vladQ, vladP, vladN = torch.split(vlad_encoding, [B, B, nNeg])
+
+            optimizer.zero_grad()
+
+            # calculate loss for each Query, Positive, Negative triplet
+            # due to potential difference in number of negatives have to
+            # do it per query, per negative
+            loss = 0
+            for i, negCount in enumerate(negCounts):
+                for n in range(negCount):
+                    negIx = (torch.sum(negCounts[:i]) + n).item()
+                    loss += criterion(vladQ[i: i + 1], vladP[i: i + 1], 
+                        vladN[negIx:negIx + 1])
+
+            # normalise by actual number of negatives
+            loss /= nNeg.float().to(device)  
+            loss.backward()
+            optimizer.step()
+            del data_input, image_encoding, vlad_encoding, vladQ, vladP, vladN
+            del query, positives, negatives
+
+            batch_loss = loss.item()
+            epoch_loss += batch_loss
+
+            if iteration % 50 == 0 or batch_count <= 10:
+                tqdm.write("==> Epoch[{}]({}/{}): Loss: {:.4f}".format(
+                    epoch_num, iteration, batch_count, batch_loss))
+                writer.add_scalar("Train/Loss", batch_loss,
+                    ((epoch_num - 1) * batch_count) + iteration)
+                writer.add_scalar("Train/nNeg", nNeg,
+                    ((epoch_num - 1) * batch_count) + iteration)
+                tqdm.write("Allocated: " 
+                    + humanbytes(torch.cuda.memory_allocated()))
+                tqdm.write("Cached:    " 
+                    + humanbytes(torch.cuda.memory_cached()))
+
+        start_iter += len(training_dataloader)
+        del training_dataloader, loss
+        optimizer.zero_grad()
+        torch.cuda.empty_cache()
+
+    avg_loss = epoch_loss / batch_count
+
+    tqdm.write("===> Epoch {} Complete: Avg. Loss: {:.4f}".format(epoch_num, 
+        avg_loss))
+    writer.add_scalar("Train/AvgLoss", avg_loss, epoch_num)
 
 
-def create_from_scratch(options, config, dataset, device):
-    """ """
-    print('===> Finding cluster centroids')
-    print('===> Loading dataset(s) for clustering')
+def train_model(
+        training_set, 
+        validation_set, 
+        model, 
+        trainer,
+        options, 
+        config, 
+        writer
+    ):
+    """ Perform training and validation of model."""
+    not_improved, best_score = 0, 0
 
-    # Create encoder and model
-    encoder_dim, encoder = get_backend()
-    model = get_model(encoder, encoder_dim, config['global_params'], 
-        append_pca_layer=False)
-
+    device = trainer.get_device()
     model = model.to(device)
     
-    # Create descriptor file
-    descriptor_file = "centroids", "vgg16_" + "mapillary_" \
-        + config["train"]["num_clusters"] + "_desc_cen.hdf5"
-    descriptor_cache = os.path.join(options.cache_path, descriptor_file)
+    """
+    # TODO: Look into checkpoint
+    if options.resume_path:
+        not_improved = checkpoint["not_improved"]
+        best_score = checkpoint["best_score"]
+    """
+    encoder_dim, _ = get_backend()
 
+    print("About to train epoch...")
+    input()
 
-    print('===> Calculating descriptors and clusters')
-    get_clusters(dataset, model, encoder_dim, device, options, config)
+    for epoch in trange(1, options.epochs + 1, desc="Epoch number".rjust(15), 
+        position=0):
 
-    # Return to CPU for initialization
-    model = model.to(device="cpu")
-    
-    # Initialize model with centroids and descriptors from training data
-    with h5py.File(descriptor_cache, mode='r') as h5:
-        clusters = h5.get("centroids")[...]
-        descriptors = h5.get("descriptors")[...]
-        model.pool.init_params(clusters, descriptors)
-        del clusters, descriptors
+        # TODO: Fix!
+        train_epoch(
+            training_set, 
+            model, 
+            trainer,
+            encoder_dim, 
+            epoch, 
+            options, 
+            config, 
+            writer
+        )
 
-    return model
+        if trainer.has_scheduler():
+            trainer.get_scheduler().step(epoch)
+        if (epoch % int(config["train"]["evalevery"])) == 0:
+            # TODO: Swap with mine
+            recalls = val(
+                    validation_set, 
+                    model, 
+                    encoder_dim, 
+                    device, 
+                    options, 
+                    config, 
+                    writer, 
+                    epoch, 
+                    write_tboard=True, 
+                    pbar_position=1
+                )
 
-
-def perform_training(train_dataset, validation_dataset, model, optimizer, 
-    criterion, encoder_dim, device, epoch, opt, config, checkpoint, writer):
-    """ Perform training and validation of model."""
-    not_improved = 0
-    best_score = 0
-    if opt.resume_path:
-        not_improved = checkpoint['not_improved']
-        best_score = checkpoint['best_score']
-
-    for epoch in trange(opt.start_epoch + 1, opt.nEpochs + 1, 
-        desc='Epoch number'.rjust(15), position=0):
-
-        train_epoch(train_dataset, model, optimizer, criterion, encoder_dim, 
-            device, epoch, opt, config, writer)
-        if scheduler is not None:
-            scheduler.step(epoch)
-        if (epoch % int(config['train']['evalevery'])) == 0:
-            recalls = val(validation_dataset, model, encoder_dim, device, opt, 
-                config, writer, epoch, write_tboard=True, pbar_position=1)
             is_best = recalls[5] > best_score
             if is_best:
                 not_improved = 0
@@ -158,31 +194,31 @@ def perform_training(train_dataset, validation_dataset, model, optimizer,
                 not_improved += 1
 
             save_checkpoint({
-                    'epoch': epoch,
-                    'state_dict': model.state_dict(),
-                    'recalls': recalls,
-                    'best_score': best_score,
-                    'not_improved': not_improved,
-                    'optimizer': optimizer.state_dict(),
-                    'parallel': False,
+                    "epoch"        : epoch,
+                    "state_dict"   : model.state_dict(),
+                    "recalls"      : recalls,
+                    "best_score"   : best_score,
+                    "not_improved" : not_improved,
+                    "optimizer"    : optimizer.state_dict(),
+                    "parallel"     : False,
                 }, 
-                opt, 
-                is_best
+                options, 
+                is_best,
             )
 
-            if int(config['train']['patience']) > 0 \
-                and not_improved > (int(config['train']['patience']) \
-                / int(config['train']['evalevery'])):
-                print('Performance did not improve for', 
-                    config['train']['patience'], 
-                    'epochs. Stopping.')
+            patience = int(config["train"]["patience"])
+            eval_step = int(config["train"]["evalevery"])
+            horizon = patience / eval_step
+
+            if patience > 0 and not_improved > horizon:
+                print("Performance did not improve for "
+                    + "{0} epochs. Stopping.".format(patience))
                 break
 
     print("=> Best Recall@5: {:.4f}".format(best_score), flush=True)
     writer.close()
 
-    # garbage clean GPU memory, a bug can occur when Pytorch doesn't 
-    # automatically clear the memory after runs
+    # Garbage clean GPU memory
     torch.cuda.empty_cache()  
 
-    print('Done')
+    print("Done")

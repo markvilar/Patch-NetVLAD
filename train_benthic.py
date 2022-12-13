@@ -11,92 +11,88 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
 
-import numpy as np
+from tensorboardX import SummaryWriter
 
-# NOTE: Might remove?
-# from patchnetvlad.training_tools.train_epoch import train_epoch
-# from patchnetvlad.training_tools.val import val  
-# from patchnetvlad.training_tools.tools import save_checkpoint
-
-from patchnetvlad.tools.datasets import input_transform
-from patchnetvlad.models.models_generic import get_backend, get_model
 from patchnetvlad.tools import PATCHNETVLAD_ROOT_DIR
 
-from tqdm.auto import trange
-
-from benthic.dataset import BenthicDataset, BenthicDatasetFactory
-from benthic.training_utils import (
-    create_from_checkpoint,
-    create_from_clusters,
+from benthic.dataset import BenthicDatasetFactory
+from benthic.model import (
+    create_from_checkpoint, 
+    create_from_clusters, 
     create_from_scratch,
-    perform_training
 )
+from benthic.trainer import ModelTrainer
+from benthic.training_utils import train_model
+
 
 def prepare_arguments(description: str):
     parser = argparse.ArgumentParser(description=description)
 
-    parser.add_argument('--config_path', 
+    parser.add_argument("--config_path", 
         type=str, 
-        default=os.path.join(PATCHNETVLAD_ROOT_DIR, 'configs/train.ini'),
-        help='File name (with extension) to an ini file with model config.',
+        default=os.path.join(PATCHNETVLAD_ROOT_DIR, "configs/train.ini"),
+        help="File name (with extension) to an ini file with model config.",
     )
     parser.add_argument("--data_path", 
         type=Path,
         required=True,
         help="config file path with image directory, query, and index paths",
     )
-    parser.add_argument('--cache_path', 
+    parser.add_argument("--cache_path", 
         type=str, 
         default=tempfile.mkdtemp(),
-        help='Path to save cache, centroid data to.',
+        help="Path to save cache, centroid data to.",
     )
-    parser.add_argument('--save_path', 
+    parser.add_argument("--save_path", 
         type=str, 
-        default='',
-        help='Path to save checkpoints to'
+        default="",
+        help="Path to save checkpoints to"
     )
-    parser.add_argument('--resume_path', 
+    parser.add_argument("--resume_path", 
         type=str, 
-        default='',
-        help='Full path and name (with extension) to load checkpoint from.',
+        default="",
+        help="Full path and name (with extension) to load checkpoint from.",
     )
-    parser.add_argument('--cluster_path', 
+    parser.add_argument("--cluster_path", 
         type=str, 
-        default='',
-        help='Full path and name (with extension) to load cluster data from.'
+        default="",
+        help="Full path and name (with extension) to load cluster data from."
     )
-    parser.add_argument('--identifier', 
+    parser.add_argument("--identifier", 
         type=str, 
-        default='',
-        help='Description of this model, e.g. mapillary_nopanos_vgg16_netvlad'
+        default="",
+        help="Description of this model, e.g. mapillary_nopanos_vgg16_netvlad"
     )
-    parser.add_argument('--epochs', 
+    parser.add_argument("--epochs", 
         type=int, 
         default=30, 
-        help='number of epochs to train for'
+        help="number of epochs to train for"
     )
-    parser.add_argument('--start_epoch', 
+    """
+    parser.add_argument("--start_epoch", 
         default=0, 
         type=int, 
-        metavar='N',
-        help='manual epoch number (useful on restarts)'
+        metavar="N",
+        help="manual epoch number (useful on restarts)"
     )
-    parser.add_argument('--save_every_epoch', 
-        action='store_true', 
-        help='Flag to set a separate checkpoint file for each new epoch'
+    """
+    parser.add_argument("--save_every_epoch", 
+        action="store_true", 
+        help="Flag to set a separate checkpoint file for each new epoch"
     )
-    parser.add_argument('--threads', 
+    parser.add_argument("--threads", 
         type=int, 
         default=6, 
-        help='Number of threads for each data loader to use'
+        help="Number of threads for each data loader to use"
     )
-    parser.add_argument('--nocuda', 
-        action='store_true', 
-        help='If true, use CPU only. Else use GPU.'
+    parser.add_argument("--nocuda", 
+        action="store_true", 
+        help="If true, use CPU only. Else use GPU."
     )
 
     return parser
@@ -117,37 +113,59 @@ def set_seeds(seed: int, cuda: bool):
         torch.cuda.manual_seed(seed)
 
 
-def prepare_optimizer(model, config):
+def create_trainer(model, config, device) -> ModelTrainer:
     optimizer, scheduler = None, None
-    if config['train']['optim'] == 'ADAM':
+    if config["train"]["optim"] == "ADAM":
         optimizer = optim.Adam(filter(lambda par: par.requires_grad,
-            model.parameters()), lr=float(config['train']['lr'])
+            model.parameters()), lr=float(config["train"]["lr"])
         )
-    elif config['train']['optim'] == 'SGD':
+    elif config["train"]["optim"] == "SGD":
         optimizer = optim.SGD(filter(lambda par: par.requires_grad,
-            model.parameters()), lr=float(config['train']['lr']),
-            momentum=float(config['train']['momentum']),
-            weight_decay=float(config['train']['weightDecay'])
+            model.parameters()), lr=float(config["train"]["lr"]),
+            momentum=float(config["train"]["momentum"]),
+            weight_decay=float(config["train"]["weightDecay"])
         )
 
         scheduler = optim.lr_scheduler.StepLR(optimizer, 
-            step_size=int(config['train']['lrstep']),
-            gamma=float(config['train']['lrgamma'])
+            step_size=int(config["train"]["lrstep"]),
+            gamma=float(config["train"]["lrgamma"])
         )
     else:
-        raise ValueError('Unknown optimizer: ' + config['train']['optim'])
+        raise ValueError("Unknown optimizer: " + config["train"]["optim"])
 
-    return optimizer, scheduler
-
-
-def create_loss_criterion(config, device):
     criterion = nn.TripletMarginLoss(
-        margin=float(config["train"]["margin"]) ** 0.5, 
-        p=2,
-        reduction="sum"
-    ).to(device)
+            margin=float(config["train"]["margin"]) ** 0.5, 
+            p=2,
+            reduction="sum"
+        ).to(device)
 
-    return criterion
+    batch_size = int(config["train"]["batchsize"])
+
+    trainer = ModelTrainer(
+            optimizer=optimizer,
+            scheduler=scheduler,
+            criterion=criterion,
+            device=device,
+            batch_size=batch_size,
+        )
+
+    return trainer
+
+
+def create_writer(options):
+    time_string = datetime.now().strftime("%Y%m%d_%H%M%S")
+    if options.identifier:
+        filename = time_string + "_" + options.identifier
+    else:
+        filename = time_string
+
+    writer = SummaryWriter(log_dir=os.path.join(options.save_path, filename))
+
+    # write checkpoints in logdir
+    logdir = writer.file_writer.get_logdir()
+    options.save_file_path = os.path.join(logdir, "checkpoints")
+    os.makedirs(options.save_file_path)
+    return writer
 
 
 def main():
@@ -172,20 +190,21 @@ def main():
     # Set seeds
     set_seeds(int(config["train"]["seed"]), cuda)
 
+    # Create dataset factory
     dataset_factory = BenthicDatasetFactory(
             Path(data["paths"]["image"]),
             Path(data["paths"]["query"]),
             Path(data["paths"]["index"]),
             threshold_pos = float(config["train"]["dist_positive"]),
             threshold_neg = float(config["train"]["dist_negative"]),
-            transform = input_transform,
         )
 
     # Load / create model
     model = None
     if options.resume_path:
         model = create_from_checkpoint(options, config)
-    elif options.cluster_path: # TODO: Figure out what conditions triggers this
+    elif options.cluster_path:
+        # TODO: Debug.
         model = create_from_clusters(options, config)
     else:
         # TODO: Need to integrate with Benthic dataset
@@ -193,74 +212,23 @@ def main():
 
     assert model, "no model created / loaded"
 
-    # Prepare optimizer and scheduler   
-    optimizer, scheduler = prepare_optimizer(model, config)
+    # Prepare trainer (optimizer, scheduler, criterion)
+    trainer = create_trainer(model, config, device)
 
-    # Prepare criterion
-    criterion = create_loss_criterion(config, device)
+    # Create datasets
+    print("===> Loading dataset(s)")
+    training_set, validation_set = dataset_factory.create_training_data(0.25)
 
-    # Transfer model to device
-    model = model.to(device)
+    print("===> Train. query set: {0}".format(len(training_set.query)))
+    print("===> Valid. query set: {0}".format(len(validation_set.query)))
+    print("===> Training model")
 
-    # TODO: Skip?
-    """
-    if options.resume_path:
-        checkpoint = torch.load(options.resume_path, 
-            map_location=lambda storage, loc: storage)
-        optimizer.load_state_dict(checkpoint["optimizer"])
-    """
-    
-    print('===> Loading dataset(s)')
+    # Set up Tensorboard writer
+    writer = create_writer(options)
 
-    # TODO: Create training and validation dataset
-    training, validation = dataset_factory.create_training(0.25)
-
-
-    """
-    train_dataset = MSLS(
-        opt.dataset_root_dir, 
-        mode='train', 
-        nNeg=int(config['train']['nNeg']), 
-        transform=input_transform(),
-        bs=int(config['train']['cachebatchsize']), 
-        threads=opt.threads, 
-        margin=float(config['train']['margin']),
-    )
-    """
-
-    # TODO: Swap with my dataset
-    """
-    validation_dataset = MSLS(
-        opt.dataset_root_dir, 
-        mode='val', 
-        transform=input_transform(),
-        bs=int(config['train']['cachebatchsize']), 
-        threads=opt.threads,
-        margin=float(config['train']['margin']), 
-        posDistThr=25
-    )
-    """
-    
-    """
-    print(train_dataset)
-    print(validation_dataset)
-
-    print('===> Training query set:', len(train_dataset.qIdx))
-    print('===> Evaluating on val set, query count:', 
-        len(validation_dataset.qIdx))
-    print('===> Training model')
-    writer = SummaryWriter(log_dir=os.path.join(opt.save_path, 
-        datetime.now().strftime('%b%d_%H-%M-%S') + '_' + opt.identifier))
-
-    # write checkpoints in logdir
-    logdir = writer.file_writer.get_logdir()
-    opt.save_file_path = os.path.join(logdir, 'checkpoints')
-    os.makedirs(opt.save_file_path)
-
-    # Do training
-    do_training(train_dataset, validation_dataset, model, optimizer, 
-        criterion, encoder_dim, device, epoch, opt, config, checkpoint, writer)
-    """
+    # Train model
+    train_model(training_set, validation_set, model, trainer, options, config, 
+        writer)
 
 if __name__ == "__main__":
     main()

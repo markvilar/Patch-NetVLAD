@@ -55,126 +55,31 @@ class SubCache():
         self.current_subset = 0   
 
     def update(self, net=None, outputdim=None):
-        # reset triplets
-        self.triplets = []
-        
-        if self.current_subset >= len(self.subcache_indices):
-            tqdm.write('Reset epoch - FIX THIS LATER!')
-            self.current_subset = 0
-        
-        # take n query images
-        qidxs = np.asarray(self.subcache_indices[self.current_subset])
+            qidxs = np.random.choice(len(self.qIdx), self.cached_queries, 
+                replace=False)
 
-        # take their positive in the database
-        pidxs = np.unique([i for idx in self.pIdx[qidxs] for i in idx])
+            for q in qidxs:
+                qidx = self.qIdx[q]
+                pidxs = self.pIdx[q]
+                pidx = np.random.choice(pidxs, size=1)[0]
 
-        # take m = 5*cached_queries is number of negative images
-        nidxs = np.random.choice(len(self.dbImages), self.cached_negatives,
-            replace=False)
+                while True:
+                    nidxs = np.random.choice(len(self.dbImages), size=self.nNeg)
+                    # ensure that non of the choice negative images are within 
+                    # the negative range (default 25 m)
+                    if sum(np.in1d(nidxs, self.nonNegIdx[q])) == 0:
+                        break
 
-        # and make sure that there is no positives among them
-        nidxs = nidxs[np.in1d(nidxs, 
-            np.unique([i for idx in self.nonNegIdx[qidxs] for i in idx]), 
-            invert=True)
-        ]
+                # package the triplet and target
+                triplet = [qidx, pidx, *nidxs]
+                target = [-1, 1] + [0] * len(nidxs)
 
-        # make dataloaders for query, positive and negative images
-        opt = {
-            'batch_size': self.bs, 
-            'shuffle': False, 
-            'num_workers': self.threads, 
-            'pin_memory': True
-        }
+                self.triplets.append((triplet, target))
 
-        qloader = torch.utils.data.DataLoader(
-            ImagesFromList(self.qImages[qidxs], transform=self.transform), 
-            **opt
-        )
-        ploader = torch.utils.data.DataLoader(
-            ImagesFromList(self.dbImages[pidxs], transform=self.transform), 
-            **opt
-        )
-        nloader = torch.utils.data.DataLoader(
-            ImagesFromList(self.dbImages[nidxs], transform=self.transform), 
-            **opt
-        )
+            # increment subset counter
+            self.current_subset += 1
 
-        # calculate their descriptors
-        net.eval()
-        with torch.no_grad():
-
-            # initialize descriptors
-            qvecs = torch.zeros(len(qidxs), outputdim).to(self.device)
-            pvecs = torch.zeros(len(pidxs), outputdim).to(self.device)
-            nvecs = torch.zeros(len(nidxs), outputdim).to(self.device)
-
-            batch_size = opt['batch_size']
-
-            # Calculate descriptors
-            self.calculate_descriptors(qloader, qvecs, batch_size)
-            self.calculate_descriptors(ploader, pvecs, batch_size)
-            self.calculate_descriptors(nloader, nvecs, batch_size)
-
-        tqdm.write('>> Searching for hard negatives...')
-        # compute dot product scores and ranks on GPU
-        pScores = torch.mm(qvecs, pvecs.t())
-        pScores, pRanks = torch.sort(pScores, dim=1, descending=True)
-
-        # calculate distance between query and negatives
-        nScores = torch.mm(qvecs, nvecs.t())
-        nScores, nRanks = torch.sort(nScores, dim=1, descending=True)
-
-        # convert to cpu and numpy
-        pScores, pRanks = pScores.cpu().numpy(), pRanks.cpu().numpy()
-        nScores, nRanks = nScores.cpu().numpy(), nRanks.cpu().numpy()
-
-        # selection of hard triplets
-        for q in range(len(qidxs)):
-            qidx = qidxs[q]
-
-            # find positive idx for this query (cache idx domain)
-            cached_pidx = np.where(np.in1d(pidxs, self.pIdx[qidx]))
-
-            # find idx of positive idx in rank matrix 
-            # (descending cache idx domain)
-            pidx = np.where(np.in1d(pRanks[q, :], cached_pidx))
-
-            # take the closest positve
-            dPos = pScores[q, pidx][0][0]
-
-            # get distances to all negatives
-            dNeg = nScores[q, :]
-
-            # how much are they violating
-            loss = dPos - dNeg + self.margin ** 0.5
-            violatingNeg = 0 < loss
-
-            # if less than nNeg are violating then skip this query
-            if np.sum(violatingNeg) <= self.nNeg:
-                continue
-
-            # select hardest negatives
-            hardest_negIdx = np.argsort(loss)[:self.nNeg]
-
-            # select the hardest negatives
-            cached_hardestNeg = nRanks[q, hardest_negIdx]
-
-            # select the closest positive (back to cache idx domain)
-            cached_pidx = pRanks[q, pidx][0][0]
-
-            # transform back to original index (back to original idx domain)
-            qidx = self.qIdx[qidx]
-            pidx = pidxs[cached_pidx]
-            hardestNeg = nidxs[cached_hardestNeg]
-
-            # package the triplet and target
-            triplet = [qidx, pidx, *hardestNeg]
-            target = [-1, 1] + [0] * len(hardestNeg)
-
-            self.triplets.append((triplet, target))
-
-        # increment subset counter
-        self.current_subset += 1
+            return
 
     def calculate_descriptors(self, dataloader, vecs, batch_size):
         for i, batch in tqdm(enumerate(dataloader), 
