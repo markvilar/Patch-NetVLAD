@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from torch.utils.data import DataLoader
+#from torch.utils.data import DataLoader
 from tqdm.auto import trange, tqdm
 
 from patchnetvlad.training_tools.val import val
@@ -38,10 +38,9 @@ def train_epoch(training_set, model, trainer, encoder_dim, epoch_num, options,
     batch_size = trainer.get_batch_size()
     batch_count = (query_count + batch_size - 1) // batch_size
 
-    # NOTE: For each epoch with the training set, iterate over a subset 
-    # (stored in the subcache)
-    for sub_iter in trange(batch_count, desc="Cache refresh".rjust(15), 
-        position=1):
+    # Iterate over caches - for each cache
+    for sub_iter in trange(training_set.get_cache_count(), 
+        desc="Cache refresh".rjust(15), position=1):
         
         pool_size = encoder_dim
         if config["global_params"]["pooling"].lower() == "netvlad":
@@ -50,20 +49,25 @@ def train_epoch(training_set, model, trainer, encoder_dim, epoch_num, options,
         tqdm.write("====> Building Cache")
         
         # TODO: Implement cache?
-        #training_set.update_subcache(model, pool_size)
+        
+        training_set.update_cache() # update_subcache(model, pool_size)
 
         # TODO: Implement function to create dataloader
-        training_dataloader = DataLoader(dataset=training_set, 
-            num_workers=options.threads,
-            batch_size=batch_size, 
-            shuffle=True,
-            collate_fn=batch.tuples_to_tensors, # TODO: Verify
-            pin_memory=pin_memory)
+        training_dataloader = torch.utils.data.DataLoader(
+                dataset=training_set, 
+                num_workers=options.threads,
+                batch_size=batch_size, 
+                shuffle=True,
+                collate_fn=batch.tuples_to_tensors, # TODO: Verify
+                pin_memory=pin_memory
+            )
 
         tqdm.write("Allocated: " + humanbytes(torch.cuda.memory_allocated()))
-        tqdm.write("Cached:    " + humanbytes(torch.cuda.memory_cached()))
+        tqdm.write("Cached:    " + humanbytes(torch.cuda.memory_reserved()))
 
         model.train()
+        
+        # Iterate over batches
         for iteration, (query, positives, negatives, negCounts, indices) in \
             enumerate(tqdm(training_dataloader, position=2, leave=False, 
                 desc="Train Iter".rjust(15)), start_iter):
@@ -94,7 +98,7 @@ def train_epoch(training_set, model, trainer, encoder_dim, epoch_num, options,
                     loss += criterion(vladQ[i: i + 1], vladP[i: i + 1], 
                         vladN[negIx:negIx + 1])
 
-            # normalise by actual number of negatives
+            # Update model - normalise loss by number of negatives
             loss /= nNeg.float().to(device)  
             loss.backward()
             optimizer.step()
@@ -128,15 +132,8 @@ def train_epoch(training_set, model, trainer, encoder_dim, epoch_num, options,
     writer.add_scalar("Train/AvgLoss", avg_loss, epoch_num)
 
 
-def train_model(
-        training_set, 
-        validation_set, 
-        model, 
-        trainer,
-        options, 
-        config, 
-        writer
-    ):
+def train_model(training_set, validation_set, model, trainer, options, config, 
+    writer):
     """ Perform training and validation of model."""
     not_improved, best_score = 0, 0
 
@@ -151,40 +148,21 @@ def train_model(
     """
     encoder_dim, _ = get_backend()
 
-    print("About to train epoch...")
-    input()
-
+    print("Starting training epochs...")
     for epoch in trange(1, options.epochs + 1, desc="Epoch number".rjust(15), 
         position=0):
 
         # TODO: Fix!
-        train_epoch(
-            training_set, 
-            model, 
-            trainer,
-            encoder_dim, 
-            epoch, 
-            options, 
-            config, 
-            writer
-        )
+        train_epoch(training_set, model, trainer, encoder_dim, epoch, options, 
+            config, writer)
 
         if trainer.has_scheduler():
             trainer.get_scheduler().step(epoch)
         if (epoch % int(config["train"]["evalevery"])) == 0:
+            
             # TODO: Swap with mine
-            recalls = val(
-                    validation_set, 
-                    model, 
-                    encoder_dim, 
-                    device, 
-                    options, 
-                    config, 
-                    writer, 
-                    epoch, 
-                    write_tboard=True, 
-                    pbar_position=1
-                )
+            recalls = val(validation_set, model, encoder_dim, device, options, 
+                config, writer, epoch, write_tboard=True, pbar_position=1)
 
             is_best = recalls[5] > best_score
             if is_best:

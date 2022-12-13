@@ -10,6 +10,7 @@ from typing import Dict, List, Set, Tuple
 import numpy as np
 import torch
 import torch.utils.data as data
+import torchvision
 import pandas as pd
 
 from PIL import Image
@@ -36,7 +37,7 @@ class Query():
     def __len__(self):
         return len(self.items)
 
-    def __get_item__(self, index: int):
+    def __getitem__(self, index: int):
         return self.items[index]
 
 
@@ -53,7 +54,7 @@ class Database():
     def __len__(self):
         return len(self.items)
 
-    def __get_item__(self, index: int):
+    def __getitem__(self, index: int):
         return self.items[index]
 
 
@@ -129,8 +130,16 @@ class BenthicDataset(Dataset):
     query: Query
     database: Database
     input_transform: torchvision.transforms.Compose
-    caches: List=field(default_factory=list)
-    triplets: List=field(default_factory=list)
+    
+    # Runtime variables
+    neg_count: int=5
+    cache_size: int=1000
+    cache_index: int=0
+    cache_indices: List[np.ndarray]=field(default_factory=list)
+    triplets: List[Tuple]=field(default_factory=list)
+
+    def get_cache_size(self) -> int:
+        return self.cache_size
 
     def __len__(self):
         return len(self.triplets)
@@ -142,42 +151,83 @@ class BenthicDataset(Dataset):
         triplet, target = self.triplets[index]
 
         # get query, positive and negative index
-        qindex = triplet[0]
-        pindex = triplet[1]
-        nindex = triplet[2:]
+        query_index = triplet[0]
+        positive_index = triplet[1]
+        negative_indices = triplet[2:]
 
-        # Load query image TODO: Index -> Key -> Path?
-        query_image = Image.open(self.query_image_keys[qindex])
+        # Load query image
+        query_item = self.query[query_index]
+        query_image = Image.open(query_item.path)
         query = self.input_transform(query_image)
         
-        # Load positive image TODO: Index -> Key -> Path?
-        positive_image = Image.open(self.database_image_paths[pindex])
+        # Load positive image
+        positive_item = self.database[positive_index]
+        positive_image = Image.open(positive_item.path)
         positive = self.input_transform(positive_image)
 
-        # Load negative images TODO: Index -> Key -> Path?
-        negative_images = [Image.open(self.database_image_paths[index]) \
-            for index in nindex]
+        # Load negative images
+        negative_items = [self.database[index] for index in negative_indices]
+        negative_images = [Image.open(item.path) for item in negative_items]
         negatives = [self.input_transform(image) for image in negative_images]
         negatives = torch.stack(negatives, 0)
-
-        return query, positive, negatives, [qindex, pindex] + nindex
+        
+        indices = [query_index, positive_index] + negative_indices
+        return query, positive, negatives, indices
 
     def get_query_count(self) -> int:
         return len(self.query)
 
     def get_database_count(self) -> int:
         return len(self.database)
+
+    def get_cache_count(self) -> int:
+        return len(self.cache_indices)
    
     def new_epoch(self):
-        # TODO: Implement
-        # TODO: Calculate number of subsets
-        # TODO: Do random sample of queries
-        # TODO: Reset iterator index
-        pass
+        """ Create a new epoch for training. """
+        # Calculate the number of caches
+        cache_count = math.ceil(len(self.query) / self.cache_size)
 
+        # Create query indices and pick randomly from a uniform distribution
+        indices = np.arange(len(self.query))
+        indices = random.choices(indices, k=len(indices))
+
+        # Calculate number of subsets
+        self.cache_indices = np.array_split(indices, cache_count)
+
+        # Reset cache index
+        self.cache_index = 0
+        
     def update_cache(self):
-        # TODO: Implement
-        pass
+        """ Update cache per epoch. """
+        # Reset triplets
+        self.triplets = list()
+
+        # Pick queries randomly from cache indices
+        for query_indices in self.cache_indices:
+            for query_index in query_indices:
+                item = self.query[query_index]
+                
+                positives = list(item.positives)
+                negatives = list(item.negatives)
+
+                selected_positive = random.choices(positives)
+                selected_negatives = random.choices(negatives, k=self.neg_count)
+
+                assert len(selected_positive) == 1
+                assert len(selected_negatives) == self.neg_count
+                
+                # Construct triplet
+                triplet = [query_index, *selected_positive, *selected_negatives]
+
+                # Construct target
+                target = [-1, 1] + [0] * len(selected_negatives)
+
+                # Append triplet and target to triplets
+                self.triplets.append( (triplet, target) )
+
+        self.cache_index += 1
+        return
 
 
 class BenthicDatasetFactory():
@@ -189,17 +239,24 @@ class BenthicDatasetFactory():
             threshold_pos: float, 
             threshold_neg: float,
         ):
-        self.image_directory = image_directory
-        self.query_path = query_path
-        self.database_path = database_path
 
         assert os.path.isdir(image_directory)
         assert os.path.isfile(query_path)
         assert os.path.isfile(database_path)
 
+        self.image_directory = image_directory
+        self.query_path = query_path
+        self.database_path = database_path
+        self.threshold_pos = threshold_pos
+        self.threshold_neg = threshold_neg
+
         self.query = pd.read_csv(query_path)
         self.database = pd.read_csv(database_path)
 
+        self.prepare()
+
+    def prepare(self):
+        """ Filters samples, resets indices, and searches for images. """
         # Filter samples with altitudes out of bounds
         altitude_low, altitude_high = 1.5, 3.5
         query_mask = (self.query["altitude"] < altitude_high) \
@@ -216,16 +273,11 @@ class BenthicDatasetFactory():
         self.query_image_keys = set(self.query["label"])
         self.database_image_keys = set(self.database["label"])
 
-        # TODO: Might couple with index?
         # Search for images in image directory based on keys
         self.query_image_paths = search_for_files(self.image_directory, 
             self.query_image_keys)
         self.database_image_paths = search_for_files(self.image_directory, 
             self.database_image_keys)
-    
-        # Add thresholds
-        self.threshold_pos = threshold_pos
-        self.threshold_neg = threshold_neg
 
 
     def create_query_items(self, triplets: Dict):
