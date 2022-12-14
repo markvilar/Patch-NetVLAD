@@ -157,15 +157,20 @@ def match_two(model, device, config, im_one, im_two, plot_save_path):
 
 def main():
     parser = argparse.ArgumentParser(description='Patch-NetVLAD-Match-Two')
-    parser.add_argument('--config_path', type=str, default=join(PATCHNETVLAD_ROOT_DIR, 'configs/performance.ini'),
-                        help='File name (with extension) to an ini file that stores most of the configuration data for patch-netvlad')
-    parser.add_argument('--first_im_path', type=str, default=join(PATCHNETVLAD_ROOT_DIR, 'example_images/tokyo_db.png'),
-                        help='Full path (with extension) to an image file')
-    parser.add_argument('--second_im_path', type=str, default=join(PATCHNETVLAD_ROOT_DIR, 'example_images/tokyo_query.jpg'),
-                        help='Full path (with extension) to another image file')
-    parser.add_argument('--plot_save_path', type=str, default=join(PATCHNETVLAD_ROOT_DIR, 'results'),
-                        help='Path plus optional prefix pointing to a location to save the output matching plot')
-    parser.add_argument('--nocuda', action='store_true', help='If true, use CPU only. Else use GPU.')
+    parser.add_argument('--config_path', type=str,
+        default=join(PATCHNETVLAD_ROOT_DIR, 'configs/performance.ini'),
+        help='File name (with extension) to an ini file that stores most of the configuration data for patch-netvlad')
+    parser.add_argument('--first_im_path', type=str, 
+        default=join(PATCHNETVLAD_ROOT_DIR, 'example_images/tokyo_db.png'),
+        help='Full path (with extension) to an image file')
+    parser.add_argument('--second_im_path', type=str, 
+        default=join(PATCHNETVLAD_ROOT_DIR, 'example_images/tokyo_query.jpg'),
+        help='Full path (with extension) to another image file')
+    parser.add_argument('--plot_save_path', type=str, 
+        default=join(PATCHNETVLAD_ROOT_DIR, 'results'),
+        help='Path plus optional prefix pointing to a location to save the output matching plot')
+    parser.add_argument('--nocuda', action='store_true', 
+        help='If true, use CPU only. Else use GPU.')
 
     opt = parser.parse_args()
     print(opt)
@@ -184,7 +189,8 @@ def main():
     encoder_dim, encoder = get_backend()
 
     # must resume to do extraction
-    resume_ckpt = config['global_params']['resumePath'] + config['global_params']['num_pcs'] + '.pth.tar'
+    resume_ckpt = config['global_params']['resumePath'] \
+        + config['global_params']['num_pcs'] + '.pth.tar'
 
     # backup: try whether resume_ckpt is relative to script path
     if not isfile(resume_ckpt):
@@ -195,13 +201,18 @@ def main():
 
     if isfile(resume_ckpt):
         print("=> loading checkpoint '{}'".format(resume_ckpt))
-        checkpoint = torch.load(resume_ckpt, map_location=lambda storage, loc: storage)
-        assert checkpoint['state_dict']['WPCA.0.bias'].shape[0] == int(config['global_params']['num_pcs'])
-        config['global_params']['num_clusters'] = str(checkpoint['state_dict']['pool.centroids'].shape[0])
+        checkpoint = torch.load(resume_ckpt, map_location=lambda storage, \
+            loc: storage)
+        assert checkpoint['state_dict']['WPCA.0.bias'].shape[0] \
+            == int(config['global_params']['num_pcs'])
+        config['global_params']['num_clusters'] = \
+            str(checkpoint['state_dict']['pool.centroids'].shape[0])
 
-        model = get_model(encoder, encoder_dim, config['global_params'], append_pca_layer=True)
+        model = get_model(encoder, encoder_dim, config['global_params'], 
+            append_pca_layer=True)
 
-        if int(config['global_params']['nGPU']) > 1 and torch.cuda.device_count() > 1:
+        if int(config['global_params']['nGPU']) > 1 \
+            and torch.cuda.device_count() > 1:
             model.encoder = nn.DataParallel(model.encoder)
             # if opt.mode.lower() != 'cluster':
             model.pool = nn.DataParallel(model.pool)
@@ -210,7 +221,8 @@ def main():
         model = model.to(device)
         print("=> loaded checkpoint '{}'".format(resume_ckpt, ))
     else:
-        raise FileNotFoundError("=> no checkpoint found at '{}'".format(resume_ckpt))
+        raise FileNotFoundError("=> no checkpoint found at '{}'".format(
+            resume_ckpt))
 
     im_one = cv2.imread(opt.first_im_path, -1)
     if im_one is None:
@@ -221,8 +233,9 @@ def main():
 
     match_two(model, device, config, im_one, im_two, opt.plot_save_path)
 
-    torch.cuda.empty_cache()  # garbage clean GPU memory, a bug can occur when Pytorch doesn't automatically clear the
-    # memory after runs
+    # garbage clean GPU memory, a bug can occur when Pytorch doesn't 
+    # automatically clear the memory after runs
+    torch.cuda.empty_cache()  
     print('Done')
 
 if __name__ == "__main__":

@@ -30,7 +30,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from sklearn.neighbors import NearestNeighbors
-import faiss
+#import faiss
 import numpy as np
 
 
@@ -59,7 +59,7 @@ class NetVLAD(nn.Module):
         self.conv = nn.Conv2d(dim, num_clusters, kernel_size=(1, 1), bias=vladv2)
         # noinspection PyArgumentList
         self.centroids = nn.Parameter(torch.rand(num_clusters, dim))
-        self.use_faiss = use_faiss
+        self.use_faiss = False #use_faiss
 
     def init_params(self, clsts, traindescs):
         if not self.vladv2:
@@ -81,6 +81,7 @@ class NetVLAD(nn.Module):
                 del traindescs
                 ds_sq = np.square(knn.kneighbors(clsts, 2)[1])
                 del knn
+            """
             else:
                 index = faiss.IndexFlatL2(traindescs.shape[1])
                 # noinspection PyArgumentList
@@ -89,6 +90,7 @@ class NetVLAD(nn.Module):
                 # noinspection PyArgumentList
                 ds_sq = np.square(index.search(clsts, 2)[1])
                 del index
+            """
 
             self.alpha = (-np.log(0.01) / np.mean(ds_sq[:, 1] - ds_sq[:, 0])).item()
             # noinspection PyArgumentList

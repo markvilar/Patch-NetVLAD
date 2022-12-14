@@ -44,11 +44,18 @@ from tqdm import tqdm
 
 
 default_cities = {
-    'train': ["trondheim", "london", "boston", "melbourne", "amsterdam", "helsinki",
-              "tokyo", "toronto", "saopaulo", "moscow", "zurich", "paris", "bangkok",
-              "budapest", "austin", "berlin", "ottawa", "phoenix", "goa", "amman", "nairobi", "manila"],
-    'val': ["cph", "sf"],
-    'test': ["miami", "athens", "buenosaires", "stockholm", "bengaluru", "kampala"]
+    'train': [
+        "trondheim", "london", "boston", "melbourne", "amsterdam", "helsinki",
+        "tokyo", "toronto", "saopaulo", "moscow", "zurich", "paris", "bangkok",
+        "budapest", "austin", "berlin", "ottawa", "phoenix", "goa", "amman", 
+        "nairobi", "manila"
+    ],
+    'val': [
+        "cph", "sf"
+    ],
+    'test': [
+        "miami", "athens", "buenosaires", "stockholm", "bengaluru", "kampala"
+    ]
 }
 
 
@@ -74,9 +81,11 @@ class ImagesFromList(Dataset):
 
 
 class MSLS(Dataset):
-    def __init__(self, root_dir, cities='', nNeg=5, transform=None, mode='train', task='im2im', subtask='all',
-                 seq_length=1, posDistThr=10, negDistThr=25, cached_queries=1000, cached_negatives=1000,
-                 positive_sampling=True, bs=24, threads=8, margin=0.1, exclude_panos=True):
+    def __init__(self, root_dir, cities='', nNeg=5, transform=None, 
+        mode='train', task='im2im', subtask='all', seq_length=1, posDistThr=10, 
+        negDistThr=25, cached_queries=1000, cached_negatives=1000,
+        positive_sampling=True, bs=24, threads=8, margin=0.1, 
+        exclude_panos=True):
 
         # initializing
         assert mode in ('train', 'val', 'test')
@@ -145,43 +154,65 @@ class MSLS(Dataset):
             # when GPS / UTM is available
             if self.mode in ['train', 'val']:
                 # load query data
-                qData = pd.read_csv(join(root_dir, subdir, city, 'query', 'postprocessed.csv'), index_col=0)
-                qDataRaw = pd.read_csv(join(root_dir, subdir, city, 'query', 'raw.csv'), index_col=0)
+                qData = pd.read_csv(join(root_dir, subdir, city, 'query', 
+                    'postprocessed.csv'), index_col=0)
+                qDataRaw = pd.read_csv(join(root_dir, subdir, city, 'query', 
+                    'raw.csv'), index_col=0)
 
                 # load database data
-                dbData = pd.read_csv(join(root_dir, subdir, city, 'database', 'postprocessed.csv'), index_col=0)
-                dbDataRaw = pd.read_csv(join(root_dir, subdir, city, 'database', 'raw.csv'), index_col=0)
+                dbData = pd.read_csv(join(root_dir, subdir, city, 'database', 
+                    'postprocessed.csv'), index_col=0)
+                dbDataRaw = pd.read_csv(
+                    join(root_dir, subdir, city, 'database', 'raw.csv'), 
+                    index_col=0
+                )
 
                 # arange based on task
-                qSeqKeys, qSeqIdxs = self.arange_as_seq(qData, join(root_dir, subdir, city, 'query'), seq_length_q)
-                dbSeqKeys, dbSeqIdxs = self.arange_as_seq(dbData, join(root_dir, subdir, city, 'database'),
-                                                          seq_length_db)
+                qSeqKeys, qSeqIdxs = self.arange_as_seq(
+                    qData, 
+                    join(root_dir, subdir, city, 'query'), 
+                    seq_length_q
+                )
+                dbSeqKeys, dbSeqIdxs = self.arange_as_seq(
+                    dbData, 
+                    join(root_dir, subdir, city, 'database'),
+                    seq_length_db
+                )
 
                 # filter based on subtasks
                 if self.mode in ['val']:
-                    qIdx = pd.read_csv(join(root_dir, subdir, city, 'query', 'subtask_index.csv'), index_col=0)
-                    dbIdx = pd.read_csv(join(root_dir, subdir, city, 'database', 'subtask_index.csv'), index_col=0)
+                    qIdx = pd.read_csv(join(root_dir, subdir, city, 'query', 
+                        'subtask_index.csv'), index_col=0)
+                    dbIdx = pd.read_csv(join(root_dir, subdir, city, 'database', 
+                        'subtask_index.csv'), index_col=0)
 
-                    # find all the sequence where the center frame belongs to a subtask
+                    # find all the sequence where the center frame belongs to 
+                    # a subtask
                     val_frames = np.where(qIdx[self.subtask])[0]
-                    qSeqKeys, qSeqIdxs = self.filter(qSeqKeys, qSeqIdxs, val_frames)
+                    qSeqKeys, qSeqIdxs = self.filter(qSeqKeys, qSeqIdxs, 
+                        val_frames)
 
                     val_frames = np.where(dbIdx[self.subtask])[0]
-                    dbSeqKeys, dbSeqIdxs = self.filter(dbSeqKeys, dbSeqIdxs, val_frames)
+                    dbSeqKeys, dbSeqIdxs = self.filter(dbSeqKeys, dbSeqIdxs, 
+                        val_frames)
 
                 # filter based on panorama data
                 if self.exclude_panos:
-                    panos_frames = np.where((qDataRaw['pano'] == False).values)[0]
-                    qSeqKeys, qSeqIdxs = self.filter(qSeqKeys, qSeqIdxs, panos_frames)
+                    panos_frames = np.where(
+                        (qDataRaw['pano'] == False).values)[0]
+                    qSeqKeys, qSeqIdxs = self.filter(qSeqKeys, qSeqIdxs, 
+                        panos_frames)
 
-                    panos_frames = np.where((dbDataRaw['pano'] == False).values)[0]
-                    dbSeqKeys, dbSeqIdxs = self.filter(dbSeqKeys, dbSeqIdxs, panos_frames)
+                    panos_frames = np.where(
+                        (dbDataRaw['pano'] == False).values)[0]
+                    dbSeqKeys, dbSeqIdxs = self.filter(dbSeqKeys, dbSeqIdxs, 
+                        panos_frames)
 
                 unique_qSeqIdx = np.unique(qSeqIdxs)
                 unique_dbSeqIdx = np.unique(dbSeqIdxs)
 
-                # if a combination of city, task and subtask is chosen, where there are no query/dabase images,
-                # then continue to next city
+                # if a combination of city, task and subtask is chosen, where 
+                # there are no query/dabase images, then continue to next city
                 if len(unique_qSeqIdx) == 0 or len(unique_dbSeqIdx) == 0:
                     continue
 
@@ -339,7 +370,8 @@ class MSLS(Dataset):
         for idx in data.index:
 
             # edge cases.
-            if idx < (seq_length // 2) or idx >= (len(seqInfo) - seq_length // 2):
+            if idx < (seq_length // 2) \
+                or idx >= (len(seqInfo) - seq_length // 2):
                 continue
 
             # find surrounding frames in sequence
@@ -347,8 +379,10 @@ class MSLS(Dataset):
             seq = seqInfo.iloc[seq_idx]
 
             # the sequence must have the same sequence key and must have consecutive frames
-            if len(np.unique(seq['sequence_key'])) == 1 and (seq['frame_number'].diff()[1:] == 1).all():
-                seq_key = ','.join([join(path, 'images', key + '.jpg') for key in seq['key']])
+            if len(np.unique(seq['sequence_key'])) == 1 \
+                and (seq['frame_number'].diff()[1:] == 1).all():
+                seq_key = ','.join([join(path, 'images', key + '.jpg') 
+                    for key in seq['key']])
 
                 seq_keys.append(seq_key)
                 seq_idxs.append(seq_idx)
@@ -387,7 +421,8 @@ class MSLS(Dataset):
 
         query = data.dataloader.default_collate(query)
         positive = data.dataloader.default_collate(positive)
-        negCounts = data.dataloader.default_collate([x.shape[0] for x in negatives])
+        negCounts = data.dataloader.default_collate([x.shape[0] 
+            for x in negatives])
         negatives = torch.cat(negatives, 0)
         indices = list(itertools.chain(*indices))
 
@@ -418,10 +453,12 @@ class MSLS(Dataset):
         # reset triplets
         self.triplets = []
 
-        # if there is no network associate to the cache, then we don't do any hard negative mining.
+        # if there is no network associate to the cache, then we don't do any 
+        # hard negative mining.
         # Instead we just create some naive triplets based on distance.
         if net is None:
-            qidxs = np.random.choice(len(self.qIdx), self.cached_queries, replace=False)
+            qidxs = np.random.choice(len(self.qIdx), self.cached_queries, 
+                replace=False)
 
             for q in qidxs:
 
@@ -438,7 +475,8 @@ class MSLS(Dataset):
                 while True:
                     nidxs = np.random.choice(len(self.dbImages), size=self.nNeg)
 
-                    # ensure that non of the choice negative images are within the negative range (default 25 m)
+                    # ensure that non of the choice negative images are within 
+                    # the negative range (default 25 m)
                     if sum(np.in1d(nidxs, self.nonNegIdx[q])) == 0:
                         break
 
@@ -463,16 +501,35 @@ class MSLS(Dataset):
         pidxs = np.unique([i for idx in self.pIdx[qidxs] for i in idx])
 
         # take m = 5*cached_queries is number of negative images
-        nidxs = np.random.choice(len(self.dbImages), self.cached_negatives, replace=False)
+        nidxs = np.random.choice(len(self.dbImages), self.cached_negatives,
+            replace=False)
 
         # and make sure that there is no positives among them
-        nidxs = nidxs[np.in1d(nidxs, np.unique([i for idx in self.nonNegIdx[qidxs] for i in idx]), invert=True)]
+        nidxs = nidxs[np.in1d(nidxs, 
+            np.unique([i for idx in self.nonNegIdx[qidxs] for i in idx]), 
+            invert=True)
+        ]
 
         # make dataloaders for query, positive and negative images
-        opt = {'batch_size': self.bs, 'shuffle': False, 'num_workers': self.threads, 'pin_memory': True}
-        qloader = torch.utils.data.DataLoader(ImagesFromList(self.qImages[qidxs], transform=self.transform), **opt)
-        ploader = torch.utils.data.DataLoader(ImagesFromList(self.dbImages[pidxs], transform=self.transform), **opt)
-        nloader = torch.utils.data.DataLoader(ImagesFromList(self.dbImages[nidxs], transform=self.transform), **opt)
+        opt = {
+            'batch_size': self.bs, 
+            'shuffle': False, 
+            'num_workers': self.threads, 
+            'pin_memory': True
+        }
+
+        qloader = torch.utils.data.DataLoader(
+            ImagesFromList(self.qImages[qidxs], transform=self.transform), 
+            **opt
+        )
+        ploader = torch.utils.data.DataLoader(
+            ImagesFromList(self.dbImages[pidxs], transform=self.transform), 
+            **opt
+        )
+        nloader = torch.utils.data.DataLoader(
+            ImagesFromList(self.dbImages[nidxs], transform=self.transform), 
+            **opt
+        )
 
         # calculate their descriptors
         net.eval()
@@ -486,20 +543,29 @@ class MSLS(Dataset):
             bs = opt['batch_size']
 
             # compute descriptors
-            for i, batch in tqdm(enumerate(qloader), desc='compute query descriptors', total=len(qidxs) // bs,
-                                 position=2, leave=False):
+            for i, batch in tqdm(enumerate(qloader), 
+                desc='compute query descriptors', 
+                total=len(qidxs) // bs,
+                position=2, leave=False):
+
                 X, y = batch
                 image_encoding = net.encoder(X.to(self.device))
                 vlad_encoding = net.pool(image_encoding)
                 qvecs[i * bs:(i + 1) * bs, :] = vlad_encoding
-            for i, batch in tqdm(enumerate(ploader), desc='compute positive descriptors', total=len(pidxs) // bs,
-                                 position=2, leave=False):
+            for i, batch in tqdm(enumerate(ploader), 
+                desc='compute positive descriptors', 
+                total=len(pidxs) // bs,
+                position=2, leave=False):
+
                 X, y = batch
                 image_encoding = net.encoder(X.to(self.device))
                 vlad_encoding = net.pool(image_encoding)
                 pvecs[i * bs:(i + 1) * bs, :] = vlad_encoding
-            for i, batch in tqdm(enumerate(nloader), desc='compute negative descriptors', total=len(nidxs) // bs,
-                                 position=2, leave=False):
+            
+            for i, batch in tqdm(enumerate(nloader), 
+                desc='compute negative descriptors', 
+                total=len(nidxs) // bs,
+                position=2, leave=False):
                 X, y = batch
                 image_encoding = net.encoder(X.to(self.device))
                 vlad_encoding = net.pool(image_encoding)
@@ -526,7 +592,8 @@ class MSLS(Dataset):
             # find positive idx for this query (cache idx domain)
             cached_pidx = np.where(np.in1d(pidxs, self.pIdx[qidx]))
 
-            # find idx of positive idx in rank matrix (descending cache idx domain)
+            # find idx of positive idx in rank matrix 
+            # (descending cache idx domain)
             pidx = np.where(np.in1d(pRanks[q, :], cached_pidx))
 
             # take the closest positve
@@ -578,7 +645,8 @@ class MSLS(Dataset):
         # load images into triplet list
         query = self.transform(Image.open(self.qImages[qidx]))
         positive = self.transform(Image.open(self.dbImages[pidx]))
-        negatives = [self.transform(Image.open(self.dbImages[idx])) for idx in nidx]
+        negatives = [self.transform(Image.open(self.dbImages[idx])) 
+            for idx in nidx]
         negatives = torch.stack(negatives, 0)
 
         return query, positive, negatives, [qidx, pidx] + nidx
