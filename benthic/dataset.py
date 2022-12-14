@@ -61,8 +61,8 @@ class Database():
 def calculate_positives(anchor: pd.Series, samples: pd.DataFrame, 
     threshold: float) -> Set[int]:
     """ Returns the sample indices which are within the threshold. """
-    anchor_pos = anchor[["posx", "posy", "posz"]]
-    sample_pos = samples[["posx", "posy", "posz"]]
+    anchor_pos = anchor[["posx", "posy"]]
+    sample_pos = samples[["posx", "posy"]]
     distances = np.sqrt(np.square(sample_pos - anchor_pos).sum(axis=1))
     mask = distances < threshold
     positives = set(mask.index[mask == True].tolist())
@@ -71,8 +71,8 @@ def calculate_positives(anchor: pd.Series, samples: pd.DataFrame,
 
 def calculate_negatives(anchor: pd.Series, samples: pd.DataFrame, 
     threshold: float) -> Set[int]:
-    anchor_pos = anchor[["posx", "posy", "posz"]]
-    sample_pos = samples[["posx", "posy", "posz"]]
+    anchor_pos = anchor[["posx", "posy"]]
+    sample_pos = samples[["posx", "posy"]]
     distances = np.sqrt(np.square(sample_pos - anchor_pos).sum(axis=1))
     mask = distances > threshold
     negatives = set(mask.index[mask == True].tolist())
@@ -174,6 +174,12 @@ class BenthicDataset(Dataset):
         indices = [query_index, positive_index] + negative_indices
         return query, positive, negatives, indices
 
+    def get_query(self) -> Query:
+        return self.query
+
+    def get_database(self) -> Database:
+        return self.database
+
     def get_query_count(self) -> int:
         return len(self.query)
 
@@ -182,7 +188,13 @@ class BenthicDataset(Dataset):
 
     def get_cache_count(self) -> int:
         return len(self.cache_indices)
-   
+
+    def get_query_images(self) -> List[Path]:
+        return [item.path for item in self.query]
+
+    def get_database_images(self) -> List[Path]:
+        return [item.path for item in self.database]
+  
     def new_epoch(self):
         """ Create a new epoch for training. """
         # Calculate the number of caches
@@ -238,17 +250,26 @@ class BenthicDatasetFactory():
             database_path: Path, 
             threshold_pos: float, 
             threshold_neg: float,
+            altitude_low: float,
+            altitude_high: float,
         ):
 
         assert os.path.isdir(image_directory)
         assert os.path.isfile(query_path)
         assert os.path.isfile(database_path)
 
+        print("BenthicDatasetFactory:")
+        print(" - Positive threshold: {0}".format(threshold_pos))
+        print(" - Negative threshold: {0}".format(threshold_neg))
+
         self.image_directory = image_directory
         self.query_path = query_path
         self.database_path = database_path
+
         self.threshold_pos = threshold_pos
         self.threshold_neg = threshold_neg
+        self.altitude_low = altitude_low
+        self.altitude_high = altitude_high
 
         self.query = pd.read_csv(query_path)
         self.database = pd.read_csv(database_path)
@@ -258,14 +279,16 @@ class BenthicDatasetFactory():
     def prepare(self):
         """ Filters samples, resets indices, and searches for images. """
         # Filter samples with altitudes out of bounds
-        altitude_low, altitude_high = 1.5, 3.5
-        query_mask = (self.query["altitude"] < altitude_high) \
-            & (self.query["altitude"] > altitude_low)
-        index_mask = (self.database["altitude"] < altitude_high) \
-            & (self.database["altitude"] > altitude_low)
+        query_mask = (self.query["altitude"] < self.altitude_high) \
+            & (self.query["altitude"] > self.altitude_low)
+        index_mask = (self.database["altitude"] < self.altitude_high) \
+            & (self.database["altitude"] > self.altitude_low)
 
         self.query = self.query[query_mask]
         self.database = self.database[index_mask]
+
+        print("Query size:    {0}".format(len(self.query)))
+        print("Database size: {0}".format(len(self.database)))
 
         self.query = self.query.reset_index()
         self.database = self.database.reset_index()

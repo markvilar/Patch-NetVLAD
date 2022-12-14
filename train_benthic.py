@@ -197,6 +197,8 @@ def main():
             Path(data["paths"]["index"]),
             threshold_pos = float(config["train"]["dist_positive"]),
             threshold_neg = float(config["train"]["dist_negative"]),
+            altitude_low = float(config["train"]["altitude_low"]),
+            altitude_high = float(config["train"]["altitude_high"])
         )
 
     # Load / create model
