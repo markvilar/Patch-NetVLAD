@@ -26,8 +26,8 @@ into the design of the dataloader
 
 import os
 
-import torchvision.transforms as transforms
 import torch.utils.data as data
+import torchvision.transforms as transforms
 
 import numpy as np
 from PIL import Image

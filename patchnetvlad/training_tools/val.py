@@ -88,7 +88,8 @@ def val(eval_set, model, encoder_dim, device, opt, config, writer, epoch_num=0, 
     # any combination of mapillary cities will work as a val set
     qEndPosTot = 0
     dbEndPosTot = 0
-    for cityNum, (qEndPos, dbEndPos) in enumerate(zip(eval_set.qEndPosList, eval_set.dbEndPosList)):
+    for cityNum, (qEndPos, dbEndPos) \
+        in enumerate(zip(eval_set.qEndPosList, eval_set.dbEndPosList)):
         faiss_index = faiss.IndexFlatL2(pool_size)
         faiss_index.add(dbFeat[dbEndPosTot:dbEndPosTot+dbEndPos, :])
         _, preds = faiss_index.search(qFeat[qEndPosTot:qEndPosTot+qEndPos, :], max(n_values))

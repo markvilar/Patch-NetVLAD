@@ -61,36 +61,57 @@ def get_backend():
     return enc_dim, enc
 
 
-def get_model(encoder, encoder_dim, config, append_pca_layer=False):
+def get_model(encoder, encoder_dim, config, append_pca_layer=False) \
+    -> nn.Module:
     # config['global_params'] is passed as config
     nn_model = nn.Module()
     nn_model.add_module('encoder', encoder)
 
     if config['pooling'].lower() == 'netvlad':
-        net_vlad = NetVLAD(num_clusters=int(config['num_clusters']), dim=encoder_dim,
-                           vladv2=config.getboolean('vladv2'))
+        net_vlad = NetVLAD(
+            num_clusters=int(config['num_clusters']), 
+            dim=encoder_dim, 
+            vladv2=config.getboolean('vladv2')
+        )
         nn_model.add_module('pool', net_vlad)
     elif config['pooling'].lower() == 'patchnetvlad':
-        net_vlad = PatchNetVLAD(num_clusters=int(config['num_clusters']), dim=encoder_dim,
-                                vladv2=config.getboolean('vladv2'),
-                                patch_sizes=config['patch_sizes'], strides=config['strides'])
-        nn_model.add_module('pool', net_vlad)
+        patch_netvlad = PatchNetVLAD(
+            num_clusters=int(config['num_clusters']), 
+            dim=encoder_dim,
+            vladv2=config.getboolean('vladv2'),
+            patch_sizes=config['patch_sizes'], strides=config['strides']
+        )
+        nn_model.add_module('pool', patch_netvlad)
     elif config['pooling'].lower() == 'max':
         global_pool = nn.AdaptiveMaxPool2d((1, 1))
-        nn_model.add_module('pool', nn.Sequential(*[global_pool, Flatten(), L2Norm()]))
+        nn_model.add_module(
+            'pool', 
+            nn.Sequential(*[global_pool, Flatten(), L2Norm()])
+        )
     elif config['pooling'].lower() == 'avg':
         global_pool = nn.AdaptiveAvgPool2d((1, 1))
-        nn_model.add_module('pool', nn.Sequential(*[global_pool, Flatten(), L2Norm()]))
+        nn_model.add_module(
+            'pool', 
+            nn.Sequential(*[global_pool, Flatten(), L2Norm()])
+        )
     else:
         raise ValueError('Unknown pooling type: ' + config['pooling'].lower())
 
     if append_pca_layer:
         num_pcs = int(config['num_pcs'])
         netvlad_output_dim = encoder_dim
-        if config['pooling'].lower() == 'netvlad' or config['pooling'].lower() == 'patchnetvlad':
+        if config['pooling'].lower() == 'netvlad' \
+            or config['pooling'].lower() == 'patchnetvlad':
             netvlad_output_dim *= int(config['num_clusters'])
 
-        pca_conv = nn.Conv2d(netvlad_output_dim, num_pcs, kernel_size=(1, 1), stride=1, padding=0)
-        nn_model.add_module('WPCA', nn.Sequential(*[pca_conv, Flatten(), L2Norm(dim=-1)]))
+        pca_conv = nn.Conv2d(
+                netvlad_output_dim, 
+                num_pcs, 
+                kernel_size=(1, 1), 
+                stride=1, 
+                padding=0
+            )
+        nn_model.add_module('WPCA', 
+            nn.Sequential(*[pca_conv, Flatten(), L2Norm(dim=-1)]))
 
     return nn_model
