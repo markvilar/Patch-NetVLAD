@@ -258,9 +258,6 @@ class BenthicDatasetFactory():
         assert os.path.isfile(query_path)
         assert os.path.isfile(database_path)
 
-        print("BenthicDatasetFactory:")
-        print(" - Positive threshold: {0}".format(threshold_pos))
-        print(" - Negative threshold: {0}".format(threshold_neg))
 
         self.image_directory = image_directory
         self.query_path = query_path
@@ -273,6 +270,12 @@ class BenthicDatasetFactory():
 
         self.query = pd.read_csv(query_path)
         self.database = pd.read_csv(database_path)
+
+        print("BenthicDatasetFactory:")
+        print(" - Positive threshold: {0}".format(self.threshold_pos))
+        print(" - Negative threshold: {0}".format(self.threshold_neg))
+        print(" - Altitude low:       {0}".format(self.altitude_low))
+        print(" - Altitude high:      {0}".format(self.altitude_high))
 
         self.prepare()
 
@@ -287,8 +290,8 @@ class BenthicDatasetFactory():
         self.query = self.query[query_mask]
         self.database = self.database[index_mask]
 
-        print("Query size:    {0}".format(len(self.query)))
-        print("Database size: {0}".format(len(self.database)))
+        print(" - Query size:    {0}".format(len(self.query)))
+        print(" - Database size: {0}".format(len(self.database)))
 
         self.query = self.query.reset_index()
         self.database = self.database.reset_index()
@@ -324,6 +327,10 @@ class BenthicDatasetFactory():
         database_items = list()
         for index, row in self.database.iterrows():
             label = row["label"]
+            if label not in self.database_image_paths:
+                print("Did not find image: {0}".format(label))
+                sys.exit()
+                continue
             path = self.database_image_paths[label]
             item = DatabaseItem(key=label, path=path)
             database_items.append(item)
