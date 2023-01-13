@@ -19,4 +19,4 @@ python train_benthic.py \
     --save_path "$SAVE_PATH" \
     --config_path "$CONFIG_PATH" \
     --identifier "$IDENTIFIER" \
-    --epochs 50
+    --epochs 30

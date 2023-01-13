@@ -115,7 +115,7 @@ def validate(validation_set, model, encoder_dim, device, options, config,
         all_recalls[threshold] = recalls[index]
         tqdm.write("====> Recall@{}: {:.4f}".format(threshold, recalls[index]))
         if write_tboard:
-            writer.add_scalar('Val/Recall@' + str(threshold), recalls[index], 
-                epoch_num)
+            writer.add_scalar('validation/recall_' + str(threshold), 
+                recalls[index], epoch_num)
 
     return all_recalls

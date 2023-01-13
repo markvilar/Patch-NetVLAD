@@ -1,5 +1,5 @@
 # !/usr/bin/bash
-SAVE_PATH="/home/martin/pCloudDrive/data/selected/training_isolated"
+SAVE_PATH="/home/martin/pCloudDrive/data/selected/training_new"
 MODEL_PATH="/home/martin/data/models/mapillary_WPCA4096.pth.tar"
 CONFIG_PATH="/home/martin/dev/patch-netvlad/configs/train_benthic.ini"
 DATA_PATH="/home/martin/data/configs/training"
