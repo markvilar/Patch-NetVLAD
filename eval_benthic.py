@@ -13,21 +13,20 @@ from pathlib import Path
 
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.optim as optim
 
 from tensorboardX import SummaryWriter
 
+from patchnetvlad.models.models_generic import get_backend
 from patchnetvlad.tools import PATCHNETVLAD_ROOT_DIR
 
 from benthic.dataset import BenthicDatasetFactory
+from benthic.evaluate import evaluate
 from benthic.model import (
     create_from_checkpoint, 
     create_from_clusters, 
     create_from_scratch,
 )
-from benthic.trainer import ModelTrainer
-from benthic.training_utils import train_model
 
 
 def prepare_arguments(description: str):
@@ -43,11 +42,6 @@ def prepare_arguments(description: str):
         required=True,
         help="config file path with image directory, query, and index paths",
     )
-    parser.add_argument("--cache_path", 
-        type=str, 
-        default=tempfile.mkdtemp(),
-        help="Path to save cache, centroid data to.",
-    )
     parser.add_argument("--save_path", 
         type=str, 
         default="",
@@ -55,35 +49,13 @@ def prepare_arguments(description: str):
     )
     parser.add_argument("--resume_path", 
         type=str, 
-        default="",
+        required=True,
         help="Full path and name (with extension) to load checkpoint from.",
-    )
-    parser.add_argument("--cluster_path", 
-        type=str, 
-        default="",
-        help="Full path and name (with extension) to load cluster data from."
     )
     parser.add_argument("--identifier", 
         type=str, 
         default="",
         help="Description of this model, e.g. mapillary_nopanos_vgg16_netvlad"
-    )
-    parser.add_argument("--epochs", 
-        type=int, 
-        default=30, 
-        help="number of epochs to train for"
-    )
-    """
-    parser.add_argument("--start_epoch", 
-        default=0, 
-        type=int, 
-        metavar="N",
-        help="manual epoch number (useful on restarts)"
-    )
-    """
-    parser.add_argument("--save_every_epoch", 
-        action="store_true", 
-        help="Flag to set a separate checkpoint file for each new epoch"
     )
     parser.add_argument("--threads", 
         type=int, 
@@ -105,53 +77,6 @@ def load_configuration(path: Path):
     return config
 
 
-def set_seeds(seed: int, cuda: bool):
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if cuda:
-        torch.cuda.manual_seed(seed)
-
-
-def create_trainer(model, config, device) -> ModelTrainer:
-    optimizer, scheduler = None, None
-    if config["train"]["optim"] == "ADAM":
-        optimizer = optim.Adam(filter(lambda par: par.requires_grad,
-            model.parameters()), lr=float(config["train"]["lr"])
-        )
-    elif config["train"]["optim"] == "SGD":
-        optimizer = optim.SGD(filter(lambda par: par.requires_grad,
-            model.parameters()), lr=float(config["train"]["lr"]),
-            momentum=float(config["train"]["momentum"]),
-            weight_decay=float(config["train"]["weightDecay"])
-        )
-
-        scheduler = optim.lr_scheduler.StepLR(optimizer, 
-            step_size=int(config["train"]["lrstep"]),
-            gamma=float(config["train"]["lrgamma"])
-        )
-    else:
-        raise ValueError("Unknown optimizer: " + config["train"]["optim"])
-
-    criterion = nn.TripletMarginLoss(
-            margin=float(config["train"]["margin"]) ** 0.5, 
-            p=2,
-            reduction="sum"
-        ).to(device)
-
-    batch_size = int(config["train"]["batchsize"])
-
-    trainer = ModelTrainer(
-            optimizer=optimizer,
-            scheduler=scheduler,
-            criterion=criterion,
-            device=device,
-            batch_size=batch_size,
-        )
-
-    return trainer
-
-
 def create_writer(options):
     time_string = datetime.now().strftime("%Y%m%d_%H%M%S")
     if options.identifier:
@@ -170,7 +95,7 @@ def create_writer(options):
 
 def main():
     # Set up command-line arguments
-    parser = prepare_arguments("train patchnetvlad benthic")
+    parser = prepare_arguments("evaluate patchnetvlad benthic")
     options = parser.parse_args()
     
     print(options)
@@ -187,50 +112,37 @@ def main():
         raise Exception("No GPU found, please run with --nocuda")
     device = torch.device("cuda" if cuda else "cpu")
 
-    # Set seeds
-    set_seeds(int(config["train"]["seed"]), cuda)
-
     # Create dataset factory
     dataset_factory = BenthicDatasetFactory(
             Path(data["paths"]["image"]),
             Path(data["paths"]["query"]),
             Path(data["paths"]["index"]),
-            threshold_pos = float(config["train"]["dist_positive"]),
-            threshold_neg = float(config["train"]["dist_negative"]),
+            threshold_pos = float(config["data"]["dist_positive"]),
+            threshold_neg = float(config["data"]["dist_negative"]),
             altitude_low = float(data["navigation"]["altitude_low"]),
             altitude_high = float(data["navigation"]["altitude_high"])
         )
 
     # Load / create model
     model = None
-    if options.resume_path:
-        model = create_from_checkpoint(options, config)
-    elif options.cluster_path:
-        # TODO: Debug.
-        model = create_from_clusters(options, config)
-    else:
-        # TODO: Need to integrate with Benthic dataset
-        model = create_from_scratch(options, config, dataset, device)
+    
+    model = create_from_checkpoint(options, config)
 
     assert model, "no model created / loaded"
 
-    # Prepare trainer (optimizer, scheduler, criterion)
-    trainer = create_trainer(model, config, device)
-
     # Create datasets
     print("===> Loading dataset(s)")
-    training_set, validation_set = dataset_factory.create_training_data(0.25)
+    _, test_set = dataset_factory.create_training_data(0.99)
 
-    print("===> Train. query set: {0}".format(len(training_set.query)))
-    print("===> Valid. query set: {0}".format(len(validation_set.query)))
-    print("===> Training model")
+    print("===> Test set: {0}".format(len(test_set.query)))
+    print("===> Evaluating model")
 
     # Set up Tensorboard writer
     writer = create_writer(options)
 
-    # Train model
-    train_model(training_set, validation_set, model, trainer, options, config, 
-        writer)
+    # Test model
+    encoder_dim, _ = get_backend()
+    evaluate(test_set, model, encoder_dim, device, options, config, writer)
 
 if __name__ == "__main__":
     main()

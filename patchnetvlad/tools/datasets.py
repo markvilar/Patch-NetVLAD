@@ -26,6 +26,8 @@ into the design of the dataloader
 
 import os
 
+from typing import Tuple
+
 import torch.utils.data as data
 import torchvision.transforms as transforms
 
@@ -36,19 +38,21 @@ from sklearn.neighbors import NearestNeighbors
 from patchnetvlad.tools import PATCHNETVLAD_ROOT_DIR
 
 
-def input_transform(resize=(480, 640)):
+def input_transform(resize=(480, 640), rotation: Tuple=(0, 360)):
     if resize[0] > 0 and resize[1] > 0:
         return transforms.Compose([
             transforms.Resize(resize),
+            transforms.RandomRotation(degrees=(0, 360)),
             transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                 std=[0.229, 0.224, 0.225]),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], 
+                std=[0.229, 0.224, 0.225]),
         ])
     else:
         return transforms.Compose([
+            transforms.RandomRotation(degrees=(0, 360)),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                 std=[0.229, 0.224, 0.225]),
+                std=[0.229, 0.224, 0.225]),
         ])
 
 
