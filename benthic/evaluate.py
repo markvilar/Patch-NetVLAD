@@ -1,10 +1,31 @@
+import faiss
 import numpy as np
 import torch
-import faiss
 from tqdm.auto import tqdm
+
 from torch.utils.data import DataLoader
+
 from patchnetvlad.training_tools.msls import ImagesFromList
 from patchnetvlad.tools.datasets import input_transform
+
+def print_success(query, database, query_index, proposals, targets):
+    hits = np.in1d(proposals, targets).tolist()
+    print("Success:")
+    print(" -- Query: {0}".format(query[query_index].key))
+    for proposal, hit in zip(proposals, hits):
+        print(" -- Proposal: {0}, {1}".format(database.items[proposal].key,
+            hit))
+
+    for target in targets:
+        print(" -- Target:   {0}".format(database.items[target].key))
+
+def print_failure(query, database, query_index, proposals):
+    print("Failure:")
+    print(" -- Query: {0}".format(query[query_index].key))
+    for proposal in proposals:
+        print(" -- Proposal: {0}".format(database.items[proposal].key))
+
+
 
 def extract_features(dataloader, model, pool_size, pbar_position, device):
     image_count = len(dataloader.dataset)
@@ -27,25 +48,27 @@ def extract_features(dataloader, model, pool_size, pbar_position, device):
     return features
 
 
-def validate(validation_set, model, encoder_dim, device, options, config, 
+def evaluate(evaluation_set, model, encoder_dim, device, options, config, 
     writer, epoch_num=0, write_tboard=False, pbar_position=0):
-    """ TODO: Write a docstring. """
+    """ Evaluate a model. """
     if device.type == 'cuda':
         cuda = True
     else:
         cuda = False
-    
+
+    model = model.to(device)
+
     # Get images from validation set
-    query_images = ImagesFromList(validation_set.get_query_images(), 
+    query_images = ImagesFromList(evaluation_set.get_query_images(), 
         transform=input_transform())
-    database_images = ImagesFromList(validation_set.get_database_images(), 
+    database_images = ImagesFromList(evaluation_set.get_database_images(), 
         transform=input_transform())
 
     # Set up dataloader for query
     query_dataloader = DataLoader(
             dataset=query_images,
             num_workers=options.threads, 
-            batch_size=int(config['train']['cachebatchsize']),
+            batch_size=int(config['feature_extract']['cachebatchsize']),
             shuffle=False, 
             pin_memory=cuda,
         )
@@ -54,7 +77,7 @@ def validate(validation_set, model, encoder_dim, device, options, config,
     database_dataloader = DataLoader(
             dataset=database_images,
             num_workers=options.threads, 
-            batch_size=int(config['train']['cachebatchsize']),
+            batch_size=int(config['feature_extract']['cachebatchsize']),
             shuffle=False, 
             pin_memory=cuda,
         )
@@ -86,7 +109,7 @@ def validate(validation_set, model, encoder_dim, device, options, config,
     faiss_index.add(database_features)
 
     tqdm.write('====> Calculating recall @ N')
-    thresholds = [1, 5, 10, 20, 50, 100]
+    thresholds = [5]
 
     # Create index from database features
     faiss_index = faiss.IndexFlatL2(pool_size)
@@ -94,28 +117,43 @@ def validate(validation_set, model, encoder_dim, device, options, config,
 
     _, predictions = faiss_index.search(query_features, max(thresholds))
 
-    query = validation_set.get_query()
+    query = evaluation_set.get_query()
+    database = evaluation_set.get_database()
     positives = [item.positives for item in query.items]
+
+    print("Query size:    {0}".format(len(query.items)))
+    print("Database size: {0}".format(len(database.items)))
 
     hits = np.zeros(len(thresholds))
 
     # For each query, find correct predictions
     for query_index, prediction in enumerate(predictions):
+        
         for index, threshold in enumerate(thresholds):
             # if in top N then also in top NN, where NN > N
             proposals = prediction[:threshold]
             targets = list(positives[query_index])
             if np.any(np.in1d(proposals, targets)):
+                print_success(query, database, query_index, proposals, targets)
+                print()
+                input()
                 hits[index:] += 1
                 break
-    recalls = hits / len(validation_set.get_query())
+            #else:
+                #print_failure(query, database, query_index, proposals)
+    recalls = hits / len(evaluation_set.get_query())
 
     all_recalls = {}  # make dict for output
     for index, threshold in enumerate(thresholds):
         all_recalls[threshold] = recalls[index]
-        tqdm.write("====> Recall@{}: {:.4f}".format(threshold, recalls[index]))
+        tqdm.write("====> recall@{}: {:.4f}".format(threshold, recalls[index]))
         if write_tboard:
-            writer.add_scalar('validation/recall_' + str(threshold), 
-                recalls[index], epoch_num)
+            writer.add_scalar('eval/recall@' + str(threshold), recalls[index])
 
-    return all_recalls
+    #print("=> Best Recall@5: {:.4f}".format(best_score), flush=True)
+    writer.close()
+
+    # Garbage clean GPU memory
+    torch.cuda.empty_cache()
+
+    print("Done")
